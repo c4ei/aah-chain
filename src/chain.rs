@@ -14,18 +14,23 @@ pub struct Blockchain {
     pub genesis_commitment: String,
     /// 확정된 블록만 저장합니다. 합의 중인 후보 블록은 여기에 넣으면 안 됩니다.
     pub blocks: Vec<Block>,
-    pub initial_balances: HashMap<Address, u64>,
-    balances: HashMap<Address, u64>,
+    /// 체크포인트로 시작할 때 활성 블록 앞에 있는 확정 기준점입니다.
+    #[serde(default)]
+    pub base_height: u64,
+    #[serde(default)]
+    pub base_hash: String,
+    pub initial_balances: HashMap<Address, u128>,
+    balances: HashMap<Address, u128>,
     next_nonces: HashMap<Address, u64>,
 }
 
 impl Blockchain {
     /// 제네시스 잔액과 0번 블록으로 새 체인을 시작합니다.
-    pub fn new(initial_balances: Vec<(Address, u64)>) -> Self {
+    pub fn new(initial_balances: Vec<(Address, u128)>) -> Self {
         Self::with_chain_id(21004, initial_balances)
     }
 
-    pub fn with_chain_id(chain_id: u64, initial_balances: Vec<(Address, u64)>) -> Self {
+    pub fn with_chain_id(chain_id: u64, initial_balances: Vec<(Address, u128)>) -> Self {
         let mut entries = initial_balances.clone();
         entries.sort_by(|left, right| left.0.cmp(&right.0));
         let commitment_bytes =
@@ -45,13 +50,15 @@ impl Blockchain {
 
     fn build(
         chain_id: u64,
-        initial_balances: Vec<(Address, u64)>,
+        initial_balances: Vec<(Address, u128)>,
         genesis_commitment: String,
     ) -> Self {
         let initial_balances: HashMap<_, _> = initial_balances.into_iter().collect();
         Self {
             chain_id,
             blocks: vec![Block::genesis_with_commitment(&genesis_commitment)],
+            base_height: 0,
+            base_hash: Block::genesis_with_commitment(&genesis_commitment).hash,
             genesis_commitment,
             balances: initial_balances.clone(),
             initial_balances,
@@ -59,12 +66,76 @@ impl Blockchain {
         }
     }
 
-    pub fn balance_of(&self, address: &str) -> u64 {
+    pub fn from_snapshot(
+        chain_id: u64,
+        genesis_commitment: String,
+        height: u64,
+        block_hash: String,
+        balances: HashMap<Address, u128>,
+        next_nonces: HashMap<Address, u64>,
+    ) -> Result<Self, String> {
+        let chain = Self {
+            chain_id,
+            genesis_commitment,
+            blocks: Vec::new(),
+            base_height: height,
+            base_hash: block_hash,
+            initial_balances: balances.clone(),
+            balances,
+            next_nonces,
+        };
+        Ok(chain)
+    }
+
+    pub fn tip_height(&self) -> u64 {
+        self.blocks
+            .last()
+            .map(|block| block.height)
+            .unwrap_or(self.base_height)
+    }
+
+    pub fn tip_hash(&self) -> &str {
+        self.blocks
+            .last()
+            .map(|block| block.hash.as_str())
+            .unwrap_or(&self.base_hash)
+    }
+
+    pub fn balance_of(&self, address: &str) -> u128 {
         self.balances.get(address).copied().unwrap_or(0)
     }
 
     pub fn next_nonce(&self, address: &str) -> u64 {
         self.next_nonces.get(address).copied().unwrap_or(0)
+    }
+
+    pub fn balances_snapshot(&self) -> HashMap<Address, u128> {
+        self.balances.clone()
+    }
+
+    pub fn nonces_snapshot(&self) -> HashMap<Address, u64> {
+        self.next_nonces.clone()
+    }
+
+    pub fn block_by_height(&self, height: u64) -> Option<&Block> {
+        self.blocks.iter().find(|block| block.height == height)
+    }
+
+    pub fn block_by_hash(&self, hash: &str) -> Option<&Block> {
+        let hash = hash.trim_start_matches("0x");
+        self.blocks.iter().find(|block| block.hash == hash)
+    }
+
+    pub fn transaction_by_hash(&self, hash: &str) -> Option<(&Block, usize, &Transaction)> {
+        let hash = hash.trim_start_matches("0x");
+        self.blocks.iter().find_map(|block| {
+            block
+                .transactions
+                .iter()
+                .enumerate()
+                .find(|(_, transaction)| transaction.id() == hash)
+                .map(|(index, transaction)| (block, index, transaction))
+        })
     }
 
     /// 거래가 있을 때만 후보 블록을 만들고 즉시 적용하는 학습용 경로입니다.
@@ -77,10 +148,11 @@ impl Blockchain {
         if transactions.is_empty() {
             return Err("거래가 없으므로 빈 블록을 건너뜁니다.".into());
         }
-        let previous = self.blocks.last().expect("제네시스 블록이 필요합니다.");
+        let previous_height = self.tip_height();
+        let previous_hash = self.tip_hash().to_string();
         let block = Block::new(
-            previous.height + 1,
-            previous.hash.clone(),
+            previous_height + 1,
+            previous_hash,
             now(),
             producer,
             transactions,
@@ -99,8 +171,7 @@ impl Blockchain {
                 "블록 크기 {encoded_size}바이트가 모바일 기본 제한 {DEFAULT_MAX_BLOCK_BYTES}바이트를 넘습니다."
             ));
         }
-        let previous = self.blocks.last().expect("제네시스 블록이 필요합니다.");
-        if block.height != previous.height + 1 || block.previous_hash != previous.hash {
+        if block.height != self.tip_height() + 1 || block.previous_hash != self.tip_hash() {
             return Err("새 블록이 현재 체인의 다음 블록이 아닙니다.".into());
         }
         if block.hash != block.calculate_hash() {
@@ -123,6 +194,9 @@ impl Blockchain {
 
     /// 저장 파일을 읽은 뒤 제네시스부터 모든 잔액과 nonce를 다시 계산합니다.
     pub fn verify_and_rebuild(&mut self) -> Result<(), String> {
+        if self.base_height > 0 {
+            return Err("체크포인트 기반 체인은 전체 제네시스 재검증 대신 체크포인트 검증을 사용해야 합니다.".into());
+        }
         let mut balances = self.initial_balances.clone();
         let mut nonces = HashMap::new();
         if self.blocks.first() != Some(&Block::genesis_with_commitment(&self.genesis_commitment)) {
@@ -169,7 +243,7 @@ fn apply_transactions(
     chain_id: u64,
     transactions: &[Transaction],
     producer: &str,
-    balances: &mut HashMap<Address, u64>,
+    balances: &mut HashMap<Address, u128>,
     nonces: &mut HashMap<Address, u64>,
 ) -> Result<(), String> {
     // 블록 하나를 원자적으로 처리하기 위해 복제된 상태에 먼저 적용합니다.
@@ -190,13 +264,14 @@ fn apply_transactions(
             .amount
             .checked_add(tx.fee)
             .ok_or("송금액과 수수료 합계가 너무 큽니다.")?;
+        let total = u128::from(total);
         let sender = balances.get(&tx.from).copied().unwrap_or(0);
         if sender < total {
             return Err("수수료를 포함한 잔액이 부족합니다.".into());
         }
         balances.insert(tx.from.clone(), sender - total);
-        *balances.entry(tx.to.clone()).or_default() += tx.amount;
-        *balances.entry(producer.to_string()).or_default() += tx.fee;
+        *balances.entry(tx.to.clone()).or_default() += u128::from(tx.amount);
+        *balances.entry(producer.to_string()).or_default() += u128::from(tx.fee);
         nonces.insert(tx.from.clone(), expected_nonce + 1);
     }
     Ok(())

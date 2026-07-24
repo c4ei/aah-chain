@@ -4,7 +4,7 @@ use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-pub const MAX_SEGMENT_BYTES: u64 = 100_000_000;
+pub const MAX_ACTIVE_BLOCK_BYTES: u64 = 100_000_000;
 
 pub fn save(chain: &Blockchain, path: impl AsRef<Path>) -> Result<(), String> {
     // 학습 단계에서는 사람이 읽기 쉬운 JSON을 사용합니다.
@@ -17,29 +17,28 @@ pub fn save(chain: &Blockchain, path: impl AsRef<Path>) -> Result<(), String> {
     fs::write(path, json).map_err(|e| e.to_string())
 }
 
-/// 확정 블록을 JSONL 세그먼트에 추가하고, 다음 기록이 100MB를 넘기 전에 새 파일로 회전합니다.
-/// 모바일 클라이언트는 이 파일을 받지 않고 체크포인트/헤더만 동기화합니다.
-pub fn append_block_segmented(
+/// 저수준 호환 함수입니다. 전체 활성 용량 관리는 `ArchiveStore`가 담당합니다.
+pub fn append_block_file(
     directory: impl AsRef<Path>,
     block: &Block,
-    max_segment_bytes: u64,
+    max_active_bytes: u64,
 ) -> Result<PathBuf, String> {
-    if max_segment_bytes == 0 || max_segment_bytes > MAX_SEGMENT_BYTES {
-        return Err("세그먼트 제한은 1바이트 이상 100MB 이하여야 합니다.".into());
+    if max_active_bytes == 0 || max_active_bytes > MAX_ACTIVE_BLOCK_BYTES {
+        return Err("활성 블록 제한은 1바이트 이상 100MB 이하여야 합니다.".into());
     }
     let directory = directory.as_ref();
     fs::create_dir_all(directory).map_err(|error| error.to_string())?;
     let mut record = serde_json::to_vec(block).map_err(|error| error.to_string())?;
     record.push(b'\n');
-    if record.len() as u64 > max_segment_bytes {
-        return Err("블록 하나가 세그먼트 최대 크기보다 큽니다.".into());
+    if record.len() as u64 > max_active_bytes {
+        return Err("블록 하나가 활성 블록 최대 크기보다 큽니다.".into());
     }
 
     let mut index = 0u64;
     loop {
         let path = directory.join(format!("blocks-{index:06}.jsonl"));
         let current = fs::metadata(&path).map(|meta| meta.len()).unwrap_or(0);
-        if current + record.len() as u64 <= max_segment_bytes {
+        if current + record.len() as u64 <= max_active_bytes {
             let mut file = OpenOptions::new()
                 .create(true)
                 .append(true)
@@ -70,8 +69,8 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("aah-segment-test-{}", std::process::id()));
         let block = Block::genesis();
         let one = serde_json::to_vec(&block).unwrap().len() as u64 + 1;
-        let first = append_block_segmented(&dir, &block, one).unwrap();
-        let second = append_block_segmented(&dir, &block, one).unwrap();
+        let first = append_block_file(&dir, &block, one).unwrap();
+        let second = append_block_file(&dir, &block, one).unwrap();
         assert_ne!(first, second);
         let _ = fs::remove_dir_all(dir);
     }

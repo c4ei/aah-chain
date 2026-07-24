@@ -43,6 +43,10 @@ struct Args {
     /// bootstrap 주소 배열이 든 JSON 파일
     #[arg(long, default_value = "config/bootstrap.json")]
     bootstrap: PathBuf,
+
+    /// 활성 블록, 월별 체크포인트, 선택형 백업을 저장할 디렉터리
+    #[arg(long, default_value = "data/ledger")]
+    data_dir: PathBuf,
 }
 
 #[tokio::main]
@@ -90,6 +94,7 @@ async fn main() -> Result<(), String> {
         port: args.rpc_port,
         chain_id: args.chain_id,
         genesis,
+        data_dir: args.data_dir,
     });
     tokio::spawn(async move {
         if let Err(error) = rpc.run().await {

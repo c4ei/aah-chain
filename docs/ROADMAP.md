@@ -18,6 +18,7 @@
 | v0.0.3 | 처리완료 | Rust 1.97 clippy/fmt 수정, secp256k1 Ethereum 주소, BIP-39/44 seed, geth 계정·잔액·nonce·송금 RPC |
 | v0.0.4 | 코어 처리완료 | 제네시스 설정, 참여·보상 곡선, 30일 투표, legacy raw transaction, 1MiB 블록·100MB 세그먼트 제한 |
 | v0.0.5-1 | 코어 처리완료 | 고정 PeerId, bootstrap, 서명 proposal, timeout/round change, 확정 후 저장, 배치 sync, 4노드 통합 테스트 |
+| v0.0.5-2 | 코어 처리완료 | 월별 상태 체크포인트, 활성 블록 총합 100MB 상한, 선택형 백업, Explorer 조회 RPC, u128 초기 잔액 |
 
 ## 현재 제한
 

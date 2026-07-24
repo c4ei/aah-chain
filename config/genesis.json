@@ -55,5 +55,5 @@
     }
   ],
   "max_block_bytes": 1048576,
-  "max_segment_bytes": 99000000
+  "max_active_block_bytes": 99000000
 }

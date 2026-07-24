@@ -1,4 +1,5 @@
 pub mod account;
+pub mod archive;
 pub mod chain;
 pub mod checkpoint;
 pub mod consensus;
@@ -17,6 +18,7 @@ pub mod storage;
 pub mod wallet;
 
 pub use account::AccountWallet;
+pub use archive::{ArchiveStatus, ArchiveStore, StateSnapshot};
 pub use chain::Blockchain;
 pub use checkpoint::Checkpoint;
 pub use consensus::{BftConsensus, ConsensusMessage, ConsensusPhase, Validator};

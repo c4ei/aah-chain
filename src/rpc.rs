@@ -1,8 +1,10 @@
-use crate::{Blockchain, GenesisConfig, Mempool, Wallet, account::AccountWallet};
+use crate::model::{Block, Transaction};
+use crate::{ArchiveStore, Blockchain, GenesisConfig, Mempool, Wallet, account::AccountWallet};
 use axum::{Json, Router, routing::post};
 use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 
 /// geth/web3 도구가 접속할 HTTP JSON-RPC 설정입니다.
@@ -12,6 +14,7 @@ pub struct RpcConfig {
     pub port: u16,
     pub chain_id: u64,
     pub genesis: Option<GenesisConfig>,
+    pub data_dir: PathBuf,
 }
 
 impl Default for RpcConfig {
@@ -22,6 +25,7 @@ impl Default for RpcConfig {
             port: 8545,
             chain_id: 21004,
             genesis: None,
+            data_dir: PathBuf::from("data/ledger"),
         }
     }
 }
@@ -35,6 +39,7 @@ struct RpcState {
     faucet_alias: String,
     producer: Wallet,
     chain_id: u64,
+    archive: ArchiveStore,
 }
 
 /// 기존 geth 스크립트에서 자주 쓰는 계정·잔액·송금 API를 제공하는 호환 계층입니다.
@@ -59,7 +64,14 @@ impl RpcServer {
             .as_ref()
             .map(|genesis| genesis.chain_id)
             .unwrap_or(config.chain_id);
-        let chain = match config.genesis.as_ref() {
+        let max_active_bytes = config
+            .genesis
+            .as_ref()
+            .map(|genesis| genesis.max_active_block_bytes)
+            .unwrap_or(99_000_000);
+        let archive = ArchiveStore::new(&config.data_dir, max_active_bytes)
+            .expect("활성 블록 저장소를 만들 수 있어야 합니다.");
+        let mut chain = match config.genesis.as_ref() {
             Some(genesis) => Blockchain::from_genesis(genesis)
                 .expect("RpcServer에는 검증된 제네시스 설정을 전달해야 합니다."),
             None => Blockchain::with_chain_id(
@@ -67,6 +79,34 @@ impl RpcServer {
                 vec![(faucet.address(), 1_000_000_000_000_000_000)],
             ),
         };
+        if let Some(snapshot) = archive
+            .load_latest_snapshot()
+            .expect("상태 체크포인트를 읽을 수 있어야 합니다.")
+        {
+            assert_eq!(snapshot.chain_id, chain_id, "체크포인트 chain ID 불일치");
+            chain = Blockchain::from_snapshot(
+                chain_id,
+                chain.genesis_commitment.clone(),
+                snapshot.height,
+                snapshot.block_hash,
+                snapshot.balances,
+                snapshot.next_nonces,
+            )
+            .expect("체크포인트 상태를 복원할 수 있어야 합니다.");
+            assert_eq!(
+                chain.state_hash(),
+                snapshot.state_hash,
+                "체크포인트 상태 해시 불일치"
+            );
+            for block in archive
+                .load_active_blocks()
+                .expect("활성 블록을 읽을 수 있어야 합니다.")
+            {
+                chain
+                    .apply_block(block)
+                    .expect("활성 블록은 체크포인트에 연결되어야 합니다.");
+            }
+        }
         let mut wallets = HashMap::new();
         let faucet_address = faucet.address();
         wallets.insert(faucet_address.clone(), faucet);
@@ -78,6 +118,7 @@ impl RpcServer {
                 faucet_alias: faucet_address,
                 producer,
                 chain_id,
+                archive,
             })),
             config,
         }
@@ -128,7 +169,7 @@ fn dispatch(
     params: &[Value],
 ) -> Result<Value, (i64, String)> {
     match method {
-        "web3_clientVersion" => Ok(json!("AAH-Chain/v0.0.4/geth-rawtx-compat/rust")),
+        "web3_clientVersion" => Ok(json!("AAH-Chain/v0.0.5-2/explorer-compat/rust")),
         "net_version" => {
             let state = read_state(state)?;
             Ok(json!(state.chain_id.to_string()))
@@ -148,12 +189,7 @@ fn dispatch(
         "eth_syncing" => Ok(json!(false)),
         "eth_blockNumber" => {
             let state = read_state(state)?;
-            let height = state
-                .chain
-                .blocks
-                .last()
-                .map(|block| block.height)
-                .unwrap_or(0);
+            let height = state.chain.tip_height();
             Ok(json!(quantity(height)))
         }
         "eth_accounts" | "personal_listAccounts" => {
@@ -214,7 +250,9 @@ fn dispatch(
             let address = string_param(params, 0)?;
             let state = read_state(state)?;
             let ledger_address = resolve_ledger_address(&state, address);
-            Ok(json!(quantity(state.chain.balance_of(&ledger_address))))
+            Ok(json!(quantity_u128(
+                state.chain.balance_of(&ledger_address)
+            )))
         }
         "eth_getTransactionCount" => {
             let address = string_param(params, 0)?;
@@ -225,6 +263,68 @@ fn dispatch(
         "eth_gasPrice" => Ok(json!("0x1")),
         "eth_estimateGas" => Ok(json!("0x5208")),
         "eth_getCode" => Ok(json!("0x")),
+        "eth_getBlockByNumber" => {
+            let selector = string_param(params, 0)?;
+            let full = params.get(1).and_then(Value::as_bool).unwrap_or(false);
+            let state = read_state(state)?;
+            let height = if selector == "latest" {
+                state.chain.blocks.last().map(|block| block.height)
+            } else {
+                Some(parse_quantity(selector)?)
+            };
+            Ok(height
+                .and_then(|height| state.chain.block_by_height(height))
+                .map(|block| block_json(block, full))
+                .unwrap_or(Value::Null))
+        }
+        "eth_getBlockByHash" => {
+            let hash = string_param(params, 0)?;
+            let full = params.get(1).and_then(Value::as_bool).unwrap_or(false);
+            let state = read_state(state)?;
+            Ok(state
+                .chain
+                .block_by_hash(hash)
+                .map(|block| block_json(block, full))
+                .unwrap_or(Value::Null))
+        }
+        "eth_getTransactionByHash" => {
+            let hash = string_param(params, 0)?;
+            let state = read_state(state)?;
+            Ok(state
+                .chain
+                .transaction_by_hash(hash)
+                .map(|(block, index, transaction)| transaction_json(block, index, transaction))
+                .unwrap_or(Value::Null))
+        }
+        "eth_getTransactionReceipt" => {
+            let hash = string_param(params, 0)?;
+            let state = read_state(state)?;
+            Ok(state
+                .chain
+                .transaction_by_hash(hash)
+                .map(|(block, index, transaction)| {
+                    json!({
+                        "transactionHash": format!("0x{}", transaction.id()),
+                        "transactionIndex": quantity(index as u64),
+                        "blockHash": format!("0x{}", block.hash),
+                        "blockNumber": quantity(block.height),
+                        "from": transaction.from,
+                        "to": transaction.to,
+                        "status": "0x1"
+                    })
+                })
+                .unwrap_or(Value::Null))
+        }
+        "aah_getStorageStatus" => {
+            let state = read_state(state)?;
+            serde_json::to_value(
+                state
+                    .archive
+                    .status()
+                    .map_err(|message| (-32603, message))?,
+            )
+            .map_err(|error| (-32603, error.to_string()))
+        }
         "eth_sendTransaction" | "personal_sendTransaction" => send_transaction(state, params),
         "eth_sendRawTransaction" => send_raw_transaction(state, params),
         _ => Err((-32601, format!("지원하지 않는 JSON-RPC 메서드: {method}"))),
@@ -247,9 +347,20 @@ fn send_raw_transaction(
         .map_err(|message| (-32000, message))?;
     let transactions = state.pool.drain(1_000);
     let producer = state.producer.address();
+    let chain_before = state.chain.clone();
     state
         .chain
         .add_block(transactions, producer)
+        .map_err(|message| (-32000, message))?;
+    let block = state
+        .chain
+        .blocks
+        .last()
+        .cloned()
+        .expect("방금 생성한 블록");
+    state
+        .archive
+        .append_finalized(&block, &chain_before, &state.chain)
         .map_err(|message| (-32000, message))?;
     Ok(json!(transaction_hash))
 }
@@ -306,9 +417,20 @@ fn send_transaction(
     // 이후 BFT 실행 루프가 결합되면 여기서는 mempool 제출만 수행해야 합니다.
     let transactions = state.pool.drain(1_000);
     let producer = state.producer.address();
+    let chain_before = state.chain.clone();
     state
         .chain
         .add_block(transactions, producer)
+        .map_err(|message| (-32000, message))?;
+    let block = state
+        .chain
+        .blocks
+        .last()
+        .cloned()
+        .expect("방금 생성한 블록");
+    state
+        .archive
+        .append_finalized(&block, &chain_before, &state.chain)
         .map_err(|message| (-32000, message))?;
     Ok(json!(transaction_id))
 }
@@ -331,6 +453,52 @@ fn normalize_address(address: &str) -> String {
 
 fn quantity(value: u64) -> String {
     format!("0x{value:x}")
+}
+
+fn quantity_u128(value: u128) -> String {
+    format!("0x{value:x}")
+}
+
+fn block_json(block: &Block, full_transactions: bool) -> Value {
+    let transactions = if full_transactions {
+        block
+            .transactions
+            .iter()
+            .enumerate()
+            .map(|(index, transaction)| transaction_json(block, index, transaction))
+            .collect::<Vec<_>>()
+    } else {
+        block
+            .transactions
+            .iter()
+            .map(|transaction| json!(format!("0x{}", transaction.id())))
+            .collect::<Vec<_>>()
+    };
+    json!({
+        "number": quantity(block.height),
+        "hash": format!("0x{}", block.hash),
+        "parentHash": format!("0x{}", block.previous_hash),
+        "timestamp": quantity(block.timestamp),
+        "miner": block.producer,
+        "transactions": transactions,
+        "transactionsRoot": format!("0x{}", block.hash),
+        "size": quantity(serde_json::to_vec(block).map(|bytes| bytes.len()).unwrap_or(0) as u64)
+    })
+}
+
+fn transaction_json(block: &Block, index: usize, transaction: &Transaction) -> Value {
+    json!({
+        "hash": format!("0x{}", transaction.id()),
+        "nonce": quantity(transaction.nonce),
+        "blockHash": format!("0x{}", block.hash),
+        "blockNumber": quantity(block.height),
+        "transactionIndex": quantity(index as u64),
+        "from": transaction.from,
+        "to": transaction.to,
+        "value": quantity(transaction.amount),
+        "gasPrice": quantity(transaction.fee),
+        "input": "0x"
+    })
 }
 
 fn parse_quantity(value: &str) -> Result<u64, (i64, String)> {

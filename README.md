@@ -1,8 +1,8 @@
 # aah-chain
 
 AAH Chain을 배우며 확장하는 Rust 기반 경량 블록체인 테스트넷입니다.
-현재 배포 버전은 `0.0.5-1`이며, geth/web3 계정·잔액·송금 스크립트를 위한
-HTTP JSON-RPC 호환 계층을 추가했습니다.
+현재 배포 버전은 `0.0.5-2`이며, 월별 상태 체크포인트·활성 블록 100MB 상한과
+Block Explorer용 HTTP JSON-RPC 조회 계층을 추가했습니다.
 
 > 주의: 학습·사설 테스트넷용 코드입니다. 실제 자산을 맡기는 메인넷에 사용하지 마세요.
 
@@ -26,6 +26,8 @@ HTTP JSON-RPC 호환 계층을 추가했습니다.
 - 주요 소스의 한국어 학습 주석
 - 필요할 때만 접속하는 모바일·웹 클라이언트 구조 문서
 - geth 호환 JSON-RPC: 계정 생성·개인키/seed 가져오기, 잔액, nonce, 관리형 계정 송금
+- 월별 상태 체크포인트와 활성/백업 블록 분리(활성 전체 합계 최대 100MB)
+- Explorer용 블록·거래·영수증 조회 RPC
 
 상세 진행표는 [docs/ROADMAP.md](docs/ROADMAP.md)를 참고하세요.
 전체 목표 구조는 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)에 정리했습니다.
@@ -34,6 +36,8 @@ HTTP JSON-RPC 호환 계층을 추가했습니다.
 geth 호환 범위와 예제는 [docs/GETH_COMPAT.md](docs/GETH_COMPAT.md)를 참고하세요.
 4노드 BFT 범위는 [docs/BFT_4NODE.md](docs/BFT_4NODE.md), 제네시스 AAH와
 이전 방법은 [docs/GENESIS_AAH_TRANSFER.md](docs/GENESIS_AAH_TRANSFER.md)를 참고하세요.
+저장 정책은 [docs/ACTIVE_BACKUP_STORAGE.md](docs/ACTIVE_BACKUP_STORAGE.md), Explorer
+연동은 [docs/BLOCK_EXPLORER.md](docs/BLOCK_EXPLORER.md)를 참고하세요.
 
 ## Ubuntu 설치
 
@@ -91,6 +95,7 @@ aah-chain/
 ├── docs/                 설계, 진행상태, 운영·보안 문서
 ├── src/
 │   ├── chain.rs          블록체인 상태와 검증
+│   ├── archive.rs        월별 체크포인트와 활성/백업 블록
 │   ├── consensus.rs      PoS 가중 BFT 상태기계
 │   ├── consensus_wal.rs  합의 투표 기록·복구와 이중서명 방지
 │   ├── network.rs        QUIC/libp2p와 피어 검색
