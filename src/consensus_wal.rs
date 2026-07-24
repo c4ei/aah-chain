@@ -77,10 +77,10 @@ impl ConsensusWal {
                 record.message.round,
                 record.message.vote_type,
             );
-            if let Some(previous) = self.signed.insert(key, record.message.block_hash.clone()) {
-                if previous != record.message.block_hash {
-                    return Err("WAL에서 과거 이중투표 기록을 발견했습니다.".into());
-                }
+            if let Some(previous) = self.signed.insert(key, record.message.block_hash.clone())
+                && previous != record.message.block_hash
+            {
+                return Err("WAL에서 과거 이중투표 기록을 발견했습니다.".into());
             }
         }
         Ok(())

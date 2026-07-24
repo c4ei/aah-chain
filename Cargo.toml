@@ -1,9 +1,10 @@
 [package]
 name = "aah-chain"
-version = "0.6.1"
+version = "0.0.3"
 edition = "2024"
 
 [dependencies]
+axum = "0.8"
 clap = { version = "4.5", features = ["derive"] }
 ed25519-dalek = { version = "2.2", features = ["rand_core"] }
 futures = "0.3"

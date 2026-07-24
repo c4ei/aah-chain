@@ -2,7 +2,7 @@ use crate::model::{Address, Transaction};
 use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
 use rand_core::OsRng;
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct Wallet {
     signing_key: SigningKey,
 }

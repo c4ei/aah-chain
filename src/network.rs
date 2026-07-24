@@ -81,7 +81,8 @@ enum AahBehaviourEvent {
     Gossipsub(gossipsub::Event),
     Mdns(mdns::Event),
     Kademlia(kad::Event),
-    Identify(identify::Event),
+    // Identify 이벤트가 다른 variant보다 훨씬 크므로 Box로 감싸 enum 전체 크기를 줄입니다.
+    Identify(Box<identify::Event>),
 }
 
 impl From<gossipsub::Event> for AahBehaviourEvent {
@@ -101,7 +102,7 @@ impl From<kad::Event> for AahBehaviourEvent {
 }
 impl From<identify::Event> for AahBehaviourEvent {
     fn from(value: identify::Event) -> Self {
-        Self::Identify(value)
+        Self::Identify(Box::new(value))
     }
 }
 
@@ -271,9 +272,10 @@ async fn handle_swarm_event(
                 swarm.behaviour_mut().gossipsub.remove_explicit_peer(&peer);
             }
         }
-        SwarmEvent::Behaviour(AahBehaviourEvent::Identify(
-            identify::Event::Received { peer_id, info, .. },
-        )) => {
+        SwarmEvent::Behaviour(AahBehaviourEvent::Identify(event)) => {
+            let identify::Event::Received { peer_id, info, .. } = *event else {
+                return Ok(());
+            };
             for address in info.listen_addrs {
                 swarm.behaviour_mut().kademlia.add_address(&peer_id, address);
             }
@@ -325,9 +327,10 @@ async fn handle_swarm_event(
         SwarmEvent::NewListenAddr { address, .. } => {
             println!("QUIC P2P 대기: {address}/p2p/{}", swarm.local_peer_id());
         }
-        // Kademlia 이벤트는 라우팅 테이블 내부에서 처리되며 여기서는 로그를 생략합니다.
-        SwarmEvent::Behaviour(AahBehaviourEvent::Kademlia(_))
-        | SwarmEvent::Behaviour(AahBehaviourEvent::Identify(_)) => {}
+        // 이벤트 값을 실제로 소비해 dead_code 경고 없이 DHT 내부 처리에 맡깁니다.
+        SwarmEvent::Behaviour(AahBehaviourEvent::Kademlia(event)) => {
+            let _event = event;
+        }
         _ => {}
     }
     Ok(())

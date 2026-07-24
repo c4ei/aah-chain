@@ -6,6 +6,7 @@ pub mod mempool;
 pub mod model;
 pub mod network;
 pub mod peer_guard;
+pub mod rpc;
 pub mod storage;
 pub mod wallet;
 
@@ -16,6 +17,7 @@ pub use consensus_wal::ConsensusWal;
 pub use mempool::Mempool;
 pub use network::{NetworkCommand, NetworkConfig, P2pNode};
 pub use peer_guard::{PeerDecision, PeerGuard};
+pub use rpc::{RpcConfig, RpcServer};
 pub use wallet::Wallet;
 
 #[cfg(test)]

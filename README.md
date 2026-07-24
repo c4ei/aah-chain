@@ -1,7 +1,8 @@
 # aah-chain
 
 AAH Chain을 배우며 확장하는 Rust 기반 경량 블록체인 테스트넷입니다.
-현재 버전은 `0.6.1`이며, 기존 Step 1~5 기능에 서명된 BFT 투표와 합의 WAL 코어를 추가했습니다.
+현재 배포 버전은 `0.0.3`이며, geth/web3 계정·잔액·송금 스크립트를 위한
+HTTP JSON-RPC 호환 계층을 추가했습니다.
 
 > 주의: 학습·사설 테스트넷용 코드입니다. 실제 자산을 맡기는 메인넷에 사용하지 마세요.
 
@@ -20,11 +21,13 @@ AAH Chain을 배우며 확장하는 Rust 기반 경량 블록체인 테스트넷
 - 합의 WAL 저장·복구와 로컬 이중서명 방지
 - 주요 소스의 한국어 학습 주석
 - 필요할 때만 접속하는 모바일·웹 클라이언트 구조 문서
+- geth 호환 JSON-RPC: 계정 생성, 계정 목록, 잔액, nonce, 관리형 계정 송금
 
 상세 진행표는 [docs/ROADMAP.md](docs/ROADMAP.md)를 참고하세요.
 전체 목표 구조는 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)에 정리했습니다.
 간헐 접속 클라이언트 설계는 [docs/CLIENT.md](docs/CLIENT.md)를 참고하세요.
 버전별 변경 내용은 [CHANGELOG.md](CHANGELOG.md)에 기록합니다.
+geth 호환 범위와 예제는 [docs/GETH_COMPAT.md](docs/GETH_COMPAT.md)를 참고하세요.
 
 ## Ubuntu 설치
 
@@ -45,6 +48,16 @@ cargo fmt --check
 cargo clippy --all-targets --all-features -- -D warnings
 cargo test
 cargo run -- --port 7001
+```
+
+실행 후 P2P는 UDP `7001`, geth 호환 HTTP JSON-RPC는 로컬 TCP `8545`에서
+대기합니다. 외부 공개가 꼭 필요한 경우가 아니면 `--rpc-addr 127.0.0.1`을
+유지하세요.
+
+```bash
+curl -s http://127.0.0.1:8545 \
+  -H 'content-type: application/json' \
+  --data '{"jsonrpc":"2.0","id":1,"method":"eth_accounts","params":[]}'
 ```
 
 같은 공유기 안에서 두 번째 터미널:
@@ -76,6 +89,7 @@ aah-chain/
 │   ├── consensus_wal.rs  합의 투표 기록·복구와 이중서명 방지
 │   ├── network.rs        QUIC/libp2p와 피어 검색
 │   ├── peer_guard.rs     악성 피어 점수·차단
+│   ├── rpc.rs            geth 호환 HTTP JSON-RPC 어댑터
 │   ├── mempool.rs        거래 대기소
 │   ├── model.rs          거래·블록 모델
 │   ├── storage.rs        로컬 저장·복구

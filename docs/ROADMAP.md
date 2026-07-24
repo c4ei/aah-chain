@@ -14,7 +14,8 @@
 | Step 5 | 코어 처리완료 | stake 가중치, 제안자 순환, prevote/precommit, 2/3 초과 확정 |
 | Step 6-A | 처리완료 | 합의 투표 Ed25519 서명·검증, 단계별 투표 제한 |
 | Step 6-B | 처리완료 | WAL 영속 저장·복구, 재시작 후 로컬 이중서명 방지 |
-| v0.6.1 | 처리완료 | 한글 byte string 컴파일 오류 수정, 간헐 접속 클라이언트 설계 문서 추가 |
+| v0.0.2 | 처리완료 | 한글 byte string 컴파일 오류 수정, 간헐 접속 클라이언트 설계 문서 추가 |
+| v0.0.3 | 처리완료 | Rust 1.97 clippy 오류 수정, geth 계정·잔액·nonce·송금 JSON-RPC 호환 계층 |
 
 ## 현재 제한
 
@@ -25,6 +26,10 @@
 - PeerId 키가 재시작할 때 바뀌므로 운영용 node key 저장이 필요합니다.
 - IP 단위 연결 속도 제한, subnet diversity, ASN 다양성은 아직 없습니다.
 - 현재 JSON 저장은 큰 체인에 적합하지 않습니다.
+- v0.0.3 RPC 주소는 내부 Ed25519 주소의 20바이트 별칭이며 Ethereum
+  secp256k1 주소와 동일한 암호 형식은 아닙니다.
+- `eth_sendRawTransaction`, EVM bytecode, Solidity 계약 실행은 아직 지원하지 않습니다.
+- v0.0.3 RPC 관리형 개인키는 메모리에만 있으므로 재시작하면 새로 생성한 계정이 사라집니다.
 
 ## 다음 단계
 
@@ -46,6 +51,15 @@
 - 오래된 블록 pruning과 archive node 분리
 - 잘못된 체인을 제공한 피어 감점
 - 간헐 접속 클라이언트용 최신 확정 상태 질의와 재연결 처리
+
+### Step 7-B: Ethereum 도구 호환 확대
+
+- 암호화된 keystore와 재시작 후 계정 복구
+- secp256k1 키와 EIP-55 주소를 원장 계정 형식으로 정식 도입할지 결정
+- `eth_getTransactionByHash`, receipt, block 조회
+- 표준 gas 모델과 fee 정책
+- RLP/EIP-2718 raw transaction 검증
+- 완전한 EVM은 별도 실행 계층으로 선택 적용
 
 ### Step 8: PoS 운영
 
