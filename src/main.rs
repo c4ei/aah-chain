@@ -43,8 +43,8 @@ async fn main() -> Result<(), String> {
         ban_duration: Duration::from_secs(10 * 60),
     };
     let (peer_id, _commands, mut events) = P2pNode::new(config).run().await?;
-    let rpc_ip = IpAddr::from_str(&args.rpc_addr)
-        .map_err(|error| format!("RPC 리스닝 IP 오류: {error}"))?;
+    let rpc_ip =
+        IpAddr::from_str(&args.rpc_addr).map_err(|error| format!("RPC 리스닝 IP 오류: {error}"))?;
     let rpc = RpcServer::new(RpcConfig {
         listen_ip: rpc_ip,
         port: args.rpc_port,

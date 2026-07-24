@@ -11,17 +11,24 @@
   `eth_getTransactionCount`, `eth_sendTransaction`, 보조적인 network/gas
   조회 메서드를 구현했습니다.
 - 주소 생성·잔액 조회·송금 자동 테스트와 사용 문서를 추가했습니다.
+- 사용자 계정을 secp256k1로 전환하고 Ethereum 표준 20바이트 주소 계산을
+  적용했습니다. 알려진 geth 주소 벡터 테스트를 추가했습니다.
+- BIP-39 seed와 `m/44'/60'/0'/0/n` BIP-44 파생을 추가했습니다.
+- `personal_importRawKey`, `aah_newMnemonic`, `aah_importMnemonic`을 추가했습니다.
+- 합의 검증자/P2P Ed25519 키와 사용자 자산 계정 키의 역할을 분리했습니다.
 
 ### 수정
 
 - Rust 1.97의 `clippy -D warnings`에서 실패하던 중첩 `if`를 정리했습니다.
 - 큰 `identify::Event`를 `Box`로 감싸 `large_enum_variant` 오류를 수정했습니다.
 - Kademlia 이벤트 값을 명시적으로 소비해 미사용 variant field 경고를 수정했습니다.
+- 사용자 제공 `cargo fmt --check` 로그에 나온 전체 포맷 차이를 반영했습니다.
 
 ### 제한
 
 - `eth_sendRawTransaction`은 명확한 미지원 오류를 반환합니다.
-- RPC의 20바이트 주소는 기존 Ed25519 원장 주소에 대한 호환 별칭입니다.
+- 사용자 주소와 seed는 geth/MetaMask 방식과 호환되지만 AAH 내부 거래는 아직
+  Ethereum RLP raw transaction이 아닙니다.
 - 개발용 계정은 아직 메모리 기반이며 암호화 keystore는 다음 단계입니다.
 
 ## 0.0.2 - 2026-07-24

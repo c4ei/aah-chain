@@ -8,7 +8,9 @@ HTTP JSON-RPC 호환 계층을 추가했습니다.
 
 ## 현재 구현
 
-- Ed25519 지갑, 주소, 서명 거래
+- 사용자 계정: geth 호환 secp256k1 키와 Ethereum 20바이트 주소
+- seed 지갑: BIP-39 및 `m/44'/60'/0'/0/n` HD 파생
+- 합의 검증자·P2P: 역할을 분리한 기존 Ed25519 키
 - 잔액, nonce, 수수료, mempool
 - 블록 생성·검증, JSON 저장·복구, 체크포인트
 - 거래가 없을 때 빈 블록 생략
@@ -21,7 +23,7 @@ HTTP JSON-RPC 호환 계층을 추가했습니다.
 - 합의 WAL 저장·복구와 로컬 이중서명 방지
 - 주요 소스의 한국어 학습 주석
 - 필요할 때만 접속하는 모바일·웹 클라이언트 구조 문서
-- geth 호환 JSON-RPC: 계정 생성, 계정 목록, 잔액, nonce, 관리형 계정 송금
+- geth 호환 JSON-RPC: 계정 생성·개인키/seed 가져오기, 잔액, nonce, 관리형 계정 송금
 
 상세 진행표는 [docs/ROADMAP.md](docs/ROADMAP.md)를 참고하세요.
 전체 목표 구조는 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)에 정리했습니다.
@@ -90,11 +92,12 @@ aah-chain/
 │   ├── network.rs        QUIC/libp2p와 피어 검색
 │   ├── peer_guard.rs     악성 피어 점수·차단
 │   ├── rpc.rs            geth 호환 HTTP JSON-RPC 어댑터
+│   ├── account.rs        secp256k1, Ethereum 주소, BIP-39/44 사용자 계정
 │   ├── mempool.rs        거래 대기소
 │   ├── model.rs          거래·블록 모델
 │   ├── storage.rs        로컬 저장·복구
 │   ├── checkpoint.rs     빈 구간 체크포인트
-│   ├── wallet.rs         키·주소·서명
+│   ├── wallet.rs         Ed25519 합의·기존 테스트 지갑
 │   ├── lib.rs            재사용 가능한 코어 공개
 │   └── main.rs           노드 실행 파일
 ├── tests/                통합 테스트(다음 단계에서 확대)

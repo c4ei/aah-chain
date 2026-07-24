@@ -1,7 +1,6 @@
-use crate::{Blockchain, Mempool, Wallet};
+use crate::{Blockchain, Mempool, Wallet, account::AccountWallet};
 use axum::{Json, Router, routing::post};
 use serde_json::{Value, json};
-use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::{Arc, RwLock};
@@ -29,8 +28,8 @@ impl Default for RpcConfig {
 struct RpcState {
     chain: Blockchain,
     pool: Mempool,
-    /// RPC의 0x 주소를 실제 Ed25519 지갑에 연결합니다.
-    wallets: HashMap<String, Wallet>,
+    /// Ethereum 표준 0x 주소를 실제 secp256k1 지갑에 연결합니다.
+    wallets: HashMap<String, AccountWallet>,
     faucet_alias: String,
     producer: Wallet,
     chain_id: u64,
@@ -38,9 +37,9 @@ struct RpcState {
 
 /// 기존 geth 스크립트에서 자주 쓰는 계정·잔액·송금 API를 제공하는 호환 계층입니다.
 ///
-/// 현재 원장의 Ed25519 서명 방식은 유지하며, RPC 화면에만 Ethereum 모양의
-/// 20바이트 `0x` 별칭을 표시합니다. 따라서 raw Ethereum transaction이나
-/// Solidity EVM을 구현한 것은 아닙니다.
+/// 사용자 계정은 Ethereum과 같은 secp256k1 키와 20바이트 주소를 사용합니다.
+/// 합의 검증자 키는 기존 Ed25519를 유지합니다. raw Ethereum transaction과
+/// Solidity EVM은 별도 실행 계층이므로 아직 구현하지 않습니다.
 pub struct RpcServer {
     config: RpcConfig,
     state: Arc<RwLock<RpcState>>,
@@ -50,18 +49,19 @@ impl RpcServer {
     pub fn new(config: RpcConfig) -> Self {
         // 첫 번째 계정은 개발용 faucet입니다. 실제 운영망에서는 genesis/config와
         // 암호화된 keystore로 교체해야 합니다.
-        let faucet = Wallet::from_seed([42; 32]);
+        let faucet = AccountWallet::from_private_key([42; 32])
+            .expect("고정 개발용 faucet 개인키는 유효해야 합니다.");
         let producer = Wallet::from_seed([43; 32]);
-        let faucet_alias = rpc_alias(&faucet.address());
         let chain = Blockchain::new(vec![(faucet.address(), 1_000_000_000_000_000_000)]);
         let mut wallets = HashMap::new();
-        wallets.insert(faucet_alias.clone(), faucet);
+        let faucet_address = faucet.address();
+        wallets.insert(faucet_address.clone(), faucet);
         Self {
             state: Arc::new(RwLock::new(RpcState {
                 chain,
                 pool: Mempool::default(),
                 wallets,
-                faucet_alias,
+                faucet_alias: faucet_address,
                 producer,
                 chain_id: config.chain_id,
             })),
@@ -114,7 +114,7 @@ fn dispatch(
     params: &[Value],
 ) -> Result<Value, (i64, String)> {
     match method {
-        "web3_clientVersion" => Ok(json!("AAH-Chain/v0.0.3/rust")),
+        "web3_clientVersion" => Ok(json!("AAH-Chain/v0.0.3/geth-account-compat/rust")),
         "net_version" => {
             let state = read_state(state)?;
             Ok(json!(state.chain_id.to_string()))
@@ -134,7 +134,12 @@ fn dispatch(
         "eth_syncing" => Ok(json!(false)),
         "eth_blockNumber" => {
             let state = read_state(state)?;
-            let height = state.chain.blocks.last().map(|block| block.height).unwrap_or(0);
+            let height = state
+                .chain
+                .blocks
+                .last()
+                .map(|block| block.height)
+                .unwrap_or(0);
             Ok(json!(quantity(height)))
         }
         "eth_accounts" | "personal_listAccounts" => {
@@ -149,15 +154,47 @@ fn dispatch(
         }
         "personal_newAccount" => {
             let mut state = write_state(state)?;
-            let wallet = Wallet::new();
-            let alias = rpc_alias(&wallet.address());
-            state.wallets.insert(alias.clone(), wallet);
-            Ok(json!(alias))
+            let wallet = AccountWallet::new();
+            let address = wallet.address();
+            state.wallets.insert(address.clone(), wallet);
+            Ok(json!(address))
+        }
+        "personal_importRawKey" => {
+            let private_key = string_param(params, 0)?;
+            let wallet = AccountWallet::from_private_key_hex(private_key)
+                .map_err(|message| (-32602, message))?;
+            let address = wallet.address();
+            let mut state = write_state(state)?;
+            state.wallets.insert(address.clone(), wallet);
+            Ok(json!(address))
+        }
+        "aah_newMnemonic" => {
+            let words = AccountWallet::generate_mnemonic().map_err(|message| (-32603, message))?;
+            let wallet =
+                AccountWallet::from_mnemonic(&words, 0).map_err(|message| (-32603, message))?;
+            let address = wallet.address();
+            let mut state = write_state(state)?;
+            state.wallets.insert(address.clone(), wallet);
+            Ok(json!({"mnemonic": words, "address": address, "path": "m/44'/60'/0'/0/0"}))
+        }
+        "aah_importMnemonic" => {
+            let words = string_param(params, 0)?;
+            let index = params.get(1).and_then(Value::as_u64).unwrap_or(0);
+            let index = u32::try_from(index)
+                .map_err(|_| (-32602, "계정 index가 u32 범위를 벗어났습니다.".into()))?;
+            let wallet =
+                AccountWallet::from_mnemonic(words, index).map_err(|message| (-32602, message))?;
+            let address = wallet.address();
+            let mut state = write_state(state)?;
+            state.wallets.insert(address.clone(), wallet);
+            Ok(json!(address))
         }
         "personal_unlockAccount" => {
             let address = string_param(params, 0)?;
             let state = read_state(state)?;
-            Ok(json!(state.wallets.contains_key(&normalize_address(address))))
+            Ok(json!(
+                state.wallets.contains_key(&normalize_address(address))
+            ))
         }
         "eth_getBalance" => {
             let address = string_param(params, 0)?;
@@ -177,8 +214,7 @@ fn dispatch(
         "eth_sendTransaction" | "personal_sendTransaction" => send_transaction(state, params),
         "eth_sendRawTransaction" => Err((
             -32004,
-            "v0.0.3은 Ethereum RLP/secp256k1 raw transaction을 아직 지원하지 않습니다."
-                .into(),
+            "v0.0.3은 Ethereum RLP/secp256k1 raw transaction을 아직 지원하지 않습니다.".into(),
         )),
         _ => Err((-32601, format!("지원하지 않는 JSON-RPC 메서드: {method}"))),
     }
@@ -252,13 +288,11 @@ fn resolve_ledger_address(state: &RpcState, address: &str) -> String {
         .unwrap_or(normalized)
 }
 
-fn rpc_alias(public_key_address: &str) -> String {
-    let digest = Sha256::digest(public_key_address.as_bytes());
-    format!("0x{}", hex::encode(&digest[digest.len() - 20..]))
-}
-
 fn normalize_address(address: &str) -> String {
-    address.to_ascii_lowercase()
+    format!(
+        "0x{}",
+        address.trim_start_matches("0x").to_ascii_lowercase()
+    )
 }
 
 fn quantity(value: u64) -> String {
@@ -269,8 +303,12 @@ fn parse_quantity(value: &str) -> Result<u64, (i64, String)> {
     let hex = value
         .strip_prefix("0x")
         .ok_or_else(|| (-32602, "수량은 0x 접두사가 있는 hex여야 합니다.".into()))?;
-    u64::from_str_radix(if hex.is_empty() { "0" } else { hex }, 16)
-        .map_err(|_| (-32602, "수량이 u64 범위를 벗어났거나 잘못되었습니다.".into()))
+    u64::from_str_radix(if hex.is_empty() { "0" } else { hex }, 16).map_err(|_| {
+        (
+            -32602,
+            "수량이 u64 범위를 벗어났거나 잘못되었습니다.".into(),
+        )
+    })
 }
 
 fn string_param(params: &[Value], index: usize) -> Result<&str, (i64, String)> {
@@ -318,7 +356,12 @@ mod tests {
         let tx = json!({"from": faucet, "to": receiver, "value": "0x64", "gasPrice": "0x1"});
         assert!(dispatch(&shared, "eth_sendTransaction", &[tx]).is_ok());
         assert_eq!(
-            dispatch(&shared, "eth_getBalance", &[json!(receiver), json!("latest")]).unwrap(),
+            dispatch(
+                &shared,
+                "eth_getBalance",
+                &[json!(receiver), json!("latest")]
+            )
+            .unwrap(),
             json!("0x64")
         );
     }
@@ -328,5 +371,26 @@ mod tests {
         let shared = RpcServer::new(RpcConfig::default()).state;
         let error = dispatch(&shared, "eth_sendRawTransaction", &[json!("0x00")]).unwrap_err();
         assert_eq!(error.0, -32004);
+    }
+
+    #[test]
+    fn geth_private_key_import_returns_standard_address() {
+        let shared = RpcServer::new(RpcConfig::default()).state;
+        let private_key = "0000000000000000000000000000000000000000000000000000000000000001";
+        let address = dispatch(
+            &shared,
+            "personal_importRawKey",
+            &[json!(private_key), json!("test-password")],
+        )
+        .unwrap();
+        assert_eq!(address, json!("0x7e5f4552091a69125d5dfcb7b8c2659029395bdf"));
+    }
+
+    #[test]
+    fn standard_mnemonic_import_returns_metamask_address() {
+        let shared = RpcServer::new(RpcConfig::default()).state;
+        let words = "test test test test test test test test test test test junk";
+        let address = dispatch(&shared, "aah_importMnemonic", &[json!(words), json!(0)]).unwrap();
+        assert_eq!(address, json!("0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266"));
     }
 }

@@ -6,9 +6,15 @@ v0.0.3은 기존 geth/web3 운영 스크립트 가운데 주소 생성, 계정 �
 nonce와 관리형 계정 송금을 먼저 호환합니다. HTTP JSON-RPC 기본 주소는
 `http://127.0.0.1:8545`입니다.
 
-AAH 원장은 현재 Ed25519를 사용합니다. RPC의 `0x` 20바이트 주소는 기존
-공개키 주소에 연결되는 별칭입니다. 따라서 Ethereum 메인넷 주소 체계와
-겉모양은 같지만 암호학적으로 동일한 계정 형식은 아닙니다.
+사용자 계정은 geth와 같은 secp256k1 개인키를 사용합니다. 주소도 비압축
+공개키에서 `0x04`를 제외한 64바이트를 Keccak-256으로 해시하고 마지막
+20바이트를 취하는 Ethereum 표준 방식입니다. 같은 개인키를 geth에 가져오면
+동일한 주소가 생성됩니다.
+
+seed 문구는 BIP-39 영어 단어를 사용하며 HD 파생 경로는 MetaMask와 널리
+쓰이는 `m/44'/60'/0'/0/n`입니다. 같은 seed와 index를 사용하면 동일한
+계정 주소를 재현합니다. 검증자 합의 서명과 P2P node key는 사용자 자산
+계정과 역할이 다르므로 기존 Ed25519를 유지합니다.
 
 ## 지원 메서드
 
@@ -24,6 +30,9 @@ AAH 원장은 현재 Ed25519를 사용합니다. RPC의 `0x` 20바이트 주소�
 | `eth_accounts` | 지원 | 노드 관리형 계정 |
 | `eth_coinbase` | 지원 | 개발용 faucet 계정 |
 | `personal_newAccount` | 개발용 지원 | 암호는 아직 저장하지 않음 |
+| `personal_importRawKey` | 개발용 지원 | geth형 32바이트 secp256k1 개인키 가져오기 |
+| `aah_newMnemonic` | AAH 확장 | BIP-39 12단어 및 0번 계정 생성 |
+| `aah_importMnemonic` | AAH 확장 | seed와 index로 표준 HD 계정 복원 |
 | `personal_unlockAccount` | 개발용 지원 | 관리형 계정 여부만 확인 |
 | `eth_getBalance` | 지원 | `latest` 조회 |
 | `eth_getTransactionCount` | 지원 | 다음 nonce |
@@ -49,6 +58,30 @@ curl -s http://127.0.0.1:8545 \
 curl -s http://127.0.0.1:8545 \
   -H 'content-type: application/json' \
   --data '{"jsonrpc":"2.0","id":2,"method":"personal_newAccount","params":["개발용암호"]}'
+```
+
+geth 개인키 가져오기:
+
+```bash
+curl -s http://127.0.0.1:8545 \
+  -H 'content-type: application/json' \
+  --data '{"jsonrpc":"2.0","id":3,"method":"personal_importRawKey","params":["0x개인키","개발용암호"]}'
+```
+
+BIP-39 seed와 첫 주소 생성:
+
+```bash
+curl -s http://127.0.0.1:8545 \
+  -H 'content-type: application/json' \
+  --data '{"jsonrpc":"2.0","id":4,"method":"aah_newMnemonic","params":[]}'
+```
+
+기존 seed의 index 0 주소 복원:
+
+```bash
+curl -s http://127.0.0.1:8545 \
+  -H 'content-type: application/json' \
+  --data '{"jsonrpc":"2.0","id":5,"method":"aah_importMnemonic","params":["영어 seed 12단어",0]}'
 ```
 
 잔액 조회:
@@ -86,8 +119,22 @@ web3.js 버전에 따라 `personal_newAccount`는 provider의 직접 RPC 호출 
 ## 보안 주의
 
 - RPC 기본 리스닝 주소는 localhost입니다.
-- v0.0.3의 계정은 메모리 기반이라 노드 재시작 후 복구되지 않습니다.
+- v0.0.3의 관리형 계정은 메모리 기반이라 노드 재시작 후 자동 복구되지 않습니다.
 - `personal_newAccount`의 암호는 v0.0.3에서 실제 암호화에 사용되지 않습니다.
+- `aah_newMnemonic` 응답의 seed는 RPC 로그나 화면 캡처에 남기지 말고 오프라인에
+  안전하게 보관해야 합니다. seed를 잃으면 복구할 수 없고 노출되면 자산을 잃습니다.
 - 테스트 코인만 사용하세요.
 - 외부 공개 RPC에는 인증, TLS reverse proxy, 요청 속도 제한과 CORS 정책이
   추가되기 전까지 개인키 관리 메서드를 노출하면 안 됩니다.
+
+## 정확한 호환 범위
+
+- 호환: secp256k1 개인키, Ethereum 주소 계산, BIP-39 seed, BIP-44 파생 경로,
+  주소·잔액·nonce 관련 JSON-RPC
+- AAH 내부 형식: 현재 코인 거래 서명/직렬화와 블록 형식
+- 미지원: geth V3 암호화 keystore, RLP/EIP-2718 raw transaction, EIP-155
+  서명 복구, receipt/log, EVM bytecode 및 Solidity 계약
+
+따라서 기존 스크립트 중 `eth_accounts`, `eth_getBalance`,
+`eth_getTransactionCount`, 관리형 `eth_sendTransaction`은 사용할 수 있지만,
+MetaMask가 만드는 raw transaction을 그대로 보내는 기능은 아직 지원하지 않습니다.

@@ -34,13 +34,7 @@ impl Wallet {
         hex::encode(self.signing_key.sign(message).to_bytes())
     }
 
-    pub fn sign_transfer(
-        &self,
-        to: Address,
-        amount: u64,
-        fee: u64,
-        nonce: u64,
-    ) -> Transaction {
+    pub fn sign_transfer(&self, to: Address, amount: u64, fee: u64, nonce: u64) -> Transaction {
         let mut tx = Transaction {
             from: self.address(),
             to,
@@ -61,6 +55,13 @@ impl Default for Wallet {
 }
 
 pub fn verify_transaction(tx: &Transaction) -> Result<(), String> {
+    if tx.from.starts_with("0x") && tx.from.len() == 42 {
+        return crate::account::verify_account_signature(
+            &tx.from,
+            &tx.signing_bytes(),
+            &tx.signature,
+        );
+    }
     verify_signature(&tx.from, &tx.signing_bytes(), &tx.signature)
 }
 

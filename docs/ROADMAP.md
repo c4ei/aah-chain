@@ -6,7 +6,7 @@
 
 | 단계 | 상태 | 내용 |
 |---|---|---|
-| Step 1 | 처리완료 | 지갑, Ed25519 서명, 송금, 블록 해시 연결, 체인 검증 |
+| Step 1 | 처리완료 | 지갑, 서명, 송금, 블록 해시 연결, 체인 검증 |
 | Step 2 | 처리완료 | 모듈 분리, mempool, 수수료, JSON 저장·복구, 체크포인트 |
 | Step 3 | 처리완료 | 두 노드 간 블록 전달 개념과 원본 블록 검증 |
 | Step 4 | 처리완료 | QUIC/libp2p, mDNS, Kademlia DHT, Gossipsub, 다중 피어 |
@@ -15,7 +15,7 @@
 | Step 6-A | 처리완료 | 합의 투표 Ed25519 서명·검증, 단계별 투표 제한 |
 | Step 6-B | 처리완료 | WAL 영속 저장·복구, 재시작 후 로컬 이중서명 방지 |
 | v0.0.2 | 처리완료 | 한글 byte string 컴파일 오류 수정, 간헐 접속 클라이언트 설계 문서 추가 |
-| v0.0.3 | 처리완료 | Rust 1.97 clippy 오류 수정, geth 계정·잔액·nonce·송금 JSON-RPC 호환 계층 |
+| v0.0.3 | 처리완료 | Rust 1.97 clippy/fmt 수정, secp256k1 Ethereum 주소, BIP-39/44 seed, geth 계정·잔액·nonce·송금 RPC |
 
 ## 현재 제한
 
@@ -26,8 +26,8 @@
 - PeerId 키가 재시작할 때 바뀌므로 운영용 node key 저장이 필요합니다.
 - IP 단위 연결 속도 제한, subnet diversity, ASN 다양성은 아직 없습니다.
 - 현재 JSON 저장은 큰 체인에 적합하지 않습니다.
-- v0.0.3 RPC 주소는 내부 Ed25519 주소의 20바이트 별칭이며 Ethereum
-  secp256k1 주소와 동일한 암호 형식은 아닙니다.
+- 사용자 계정은 Ethereum 표준 secp256k1 주소이지만 합의·P2P 키는 역할 분리를
+  위해 Ed25519를 유지합니다.
 - `eth_sendRawTransaction`, EVM bytecode, Solidity 계약 실행은 아직 지원하지 않습니다.
 - v0.0.3 RPC 관리형 개인키는 메모리에만 있으므로 재시작하면 새로 생성한 계정이 사라집니다.
 
@@ -55,7 +55,7 @@
 ### Step 7-B: Ethereum 도구 호환 확대
 
 - 암호화된 keystore와 재시작 후 계정 복구
-- secp256k1 키와 EIP-55 주소를 원장 계정 형식으로 정식 도입할지 결정
+- EIP-55 checksum 주소 출력 옵션
 - `eth_getTransactionByHash`, receipt, block 조회
 - 표준 gas 모델과 fee 정책
 - RLP/EIP-2718 raw transaction 검증

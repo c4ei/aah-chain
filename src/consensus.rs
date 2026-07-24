@@ -1,6 +1,6 @@
+use crate::wallet::{Wallet, verify_signature};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
-use crate::wallet::{verify_signature, Wallet};
 
 /// 검증자와 투표권입니다. 현재 예제에서는 stake를 투표 가중치로 사용합니다.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -74,7 +74,13 @@ impl ConsensusMessage {
         validator: &Wallet,
         block_hash: impl Into<String>,
     ) -> Self {
-        Self::signed(height, round, validator, VoteType::Prevote, block_hash.into())
+        Self::signed(
+            height,
+            round,
+            validator,
+            VoteType::Prevote,
+            block_hash.into(),
+        )
     }
 
     /// 검증자 개인키로 서명된 precommit을 생성합니다.
@@ -84,7 +90,13 @@ impl ConsensusMessage {
         validator: &Wallet,
         block_hash: impl Into<String>,
     ) -> Self {
-        Self::signed(height, round, validator, VoteType::Precommit, block_hash.into())
+        Self::signed(
+            height,
+            round,
+            validator,
+            VoteType::Precommit,
+            block_hash.into(),
+        )
     }
 
     fn signed(
@@ -203,7 +215,10 @@ impl BftConsensus {
             return Err("현재 단계에서는 블록을 제안할 수 없습니다.".into());
         }
         if proposer != self.expected_proposer() {
-            return Err(format!("이번 라운드의 제안자는 {}입니다.", self.expected_proposer()));
+            return Err(format!(
+                "이번 라운드의 제안자는 {}입니다.",
+                self.expected_proposer()
+            ));
         }
         if block_hash.is_empty() {
             return Err("빈 블록 해시는 제안할 수 없습니다.".into());
@@ -246,7 +261,10 @@ impl BftConsensus {
         }
 
         let key = (message.vote_type, message.block_hash.clone());
-        self.votes.entry(key.clone()).or_default().insert(message.validator_id);
+        self.votes
+            .entry(key.clone())
+            .or_default()
+            .insert(message.validator_id);
         if self.has_quorum(&key) {
             match message.vote_type {
                 VoteType::Prevote => self.phase = ConsensusPhase::Precommit,

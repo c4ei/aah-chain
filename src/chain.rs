@@ -137,7 +137,10 @@ fn apply_transactions(
         }
         let expected_nonce = nonces.get(&tx.from).copied().unwrap_or(0);
         if tx.nonce != expected_nonce {
-            return Err(format!("nonce 오류: 기대 {expected_nonce}, 입력 {}", tx.nonce));
+            return Err(format!(
+                "nonce 오류: 기대 {expected_nonce}, 입력 {}",
+                tx.nonce
+            ));
         }
         let total = tx
             .amount

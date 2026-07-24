@@ -3,10 +3,9 @@ use crate::model::Block;
 use crate::peer_guard::{PeerDecision, PeerGuard};
 use futures::StreamExt;
 use libp2p::{
-    gossipsub, identify, kad, mdns,
+    Multiaddr, PeerId, SwarmBuilder, gossipsub, identify, kad, mdns,
     multiaddr::Protocol,
     swarm::{NetworkBehaviour, SwarmEvent},
-    Multiaddr, PeerId, SwarmBuilder,
 };
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
@@ -60,7 +59,10 @@ pub enum NetworkEvent {
     PeerDiscovered(PeerId),
     PeerConnected(PeerId),
     PeerDisconnected(PeerId),
-    BlockReceived { source: PeerId, block: Block },
+    BlockReceived {
+        source: PeerId,
+        block: Block,
+    },
     ConsensusReceived {
         source: PeerId,
         message: ConsensusMessage,
@@ -133,37 +135,37 @@ impl P2pNode {
         let mut swarm = SwarmBuilder::with_new_identity()
             .with_tokio()
             .with_quic()
-            .with_behaviour(move |key| -> Result<AahBehaviour, Box<dyn std::error::Error + Send + Sync>> {
-                let peer_id = PeerId::from(key.public());
-                let gossip_config = gossipsub::ConfigBuilder::default()
-                    .max_transmit_size(max_message_bytes)
-                    .validation_mode(gossipsub::ValidationMode::Strict)
-                    .heartbeat_interval(Duration::from_secs(1))
-                    .build()?;
-                let mut gossipsub = gossipsub::Behaviour::new(
-                    gossipsub::MessageAuthenticity::Signed(key.clone()),
-                    gossip_config,
-                )?;
-                gossipsub
-                    .subscribe(&gossipsub::IdentTopic::new(BLOCK_TOPIC))?;
-                gossipsub
-                    .subscribe(&gossipsub::IdentTopic::new(CONSENSUS_TOPIC))?;
+            .with_behaviour(
+                move |key| -> Result<AahBehaviour, Box<dyn std::error::Error + Send + Sync>> {
+                    let peer_id = PeerId::from(key.public());
+                    let gossip_config = gossipsub::ConfigBuilder::default()
+                        .max_transmit_size(max_message_bytes)
+                        .validation_mode(gossipsub::ValidationMode::Strict)
+                        .heartbeat_interval(Duration::from_secs(1))
+                        .build()?;
+                    let mut gossipsub = gossipsub::Behaviour::new(
+                        gossipsub::MessageAuthenticity::Signed(key.clone()),
+                        gossip_config,
+                    )?;
+                    gossipsub.subscribe(&gossipsub::IdentTopic::new(BLOCK_TOPIC))?;
+                    gossipsub.subscribe(&gossipsub::IdentTopic::new(CONSENSUS_TOPIC))?;
 
-                let mdns = mdns::tokio::Behaviour::new(mdns::Config::default(), peer_id)?;
-                let store = kad::store::MemoryStore::new(peer_id);
-                let mut kademlia = kad::Behaviour::new(peer_id, store);
-                kademlia.set_mode(Some(kad::Mode::Server));
-                let identify = identify::Behaviour::new(identify::Config::new(
-                    "/aah-chain/1.0.0".into(),
-                    key.public(),
-                ));
-                Ok(AahBehaviour {
-                    gossipsub,
-                    mdns,
-                    kademlia,
-                    identify,
-                })
-            })
+                    let mdns = mdns::tokio::Behaviour::new(mdns::Config::default(), peer_id)?;
+                    let store = kad::store::MemoryStore::new(peer_id);
+                    let mut kademlia = kad::Behaviour::new(peer_id, store);
+                    kademlia.set_mode(Some(kad::Mode::Server));
+                    let identify = identify::Behaviour::new(identify::Config::new(
+                        "/aah-chain/1.0.0".into(),
+                        key.public(),
+                    ));
+                    Ok(AahBehaviour {
+                        gossipsub,
+                        mdns,
+                        kademlia,
+                        identify,
+                    })
+                },
+            )
             .map_err(|error| error.to_string())?
             .with_swarm_config(|cfg| cfg.with_idle_connection_timeout(idle_timeout))
             .build();
@@ -277,16 +279,17 @@ async fn handle_swarm_event(
                 return Ok(());
             };
             for address in info.listen_addrs {
-                swarm.behaviour_mut().kademlia.add_address(&peer_id, address);
+                swarm
+                    .behaviour_mut()
+                    .kademlia
+                    .add_address(&peer_id, address);
             }
         }
-        SwarmEvent::Behaviour(AahBehaviourEvent::Gossipsub(
-            gossipsub::Event::Message {
-                propagation_source,
-                message,
-                ..
-            },
-        )) => {
+        SwarmEvent::Behaviour(AahBehaviourEvent::Gossipsub(gossipsub::Event::Message {
+            propagation_source,
+            message,
+            ..
+        })) => {
             let peer_key = propagation_source.to_string();
             if guard.check(&peer_key) == PeerDecision::TemporarilyBlocked {
                 return Ok(());
@@ -316,7 +319,10 @@ async fn handle_swarm_event(
                     message,
                 },
             };
-            event_tx.send(network_event).await.map_err(|e| e.to_string())?;
+            event_tx
+                .send(network_event)
+                .await
+                .map_err(|e| e.to_string())?;
         }
         SwarmEvent::ConnectionEstablished { peer_id, .. } => {
             let _ = event_tx.send(NetworkEvent::PeerConnected(peer_id)).await;
