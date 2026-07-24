@@ -1,7 +1,7 @@
 # aah-chain
 
 AAH Chain을 배우며 확장하는 Rust 기반 경량 블록체인 테스트넷입니다.
-현재 버전은 기존 Step 1~5 기능에 서명된 BFT 투표와 합의 WAL 코어를 추가했습니다.
+현재 버전은 `0.6.1`이며, 기존 Step 1~5 기능에 서명된 BFT 투표와 합의 WAL 코어를 추가했습니다.
 
 > 주의: 학습·사설 테스트넷용 코드입니다. 실제 자산을 맡기는 메인넷에 사용하지 마세요.
 
@@ -19,9 +19,12 @@ AAH Chain을 배우며 확장하는 Rust 기반 경량 블록체인 테스트넷
 - 합의 투표 Ed25519 서명 검증
 - 합의 WAL 저장·복구와 로컬 이중서명 방지
 - 주요 소스의 한국어 학습 주석
+- 필요할 때만 접속하는 모바일·웹 클라이언트 구조 문서
 
 상세 진행표는 [docs/ROADMAP.md](docs/ROADMAP.md)를 참고하세요.
 전체 목표 구조는 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)에 정리했습니다.
+간헐 접속 클라이언트 설계는 [docs/CLIENT.md](docs/CLIENT.md)를 참고하세요.
+버전별 변경 내용은 [CHANGELOG.md](CHANGELOG.md)에 기록합니다.
 
 ## Ubuntu 설치
 
@@ -81,6 +84,7 @@ aah-chain/
 │   ├── lib.rs            재사용 가능한 코어 공개
 │   └── main.rs           노드 실행 파일
 ├── tests/                통합 테스트(다음 단계에서 확대)
+├── CHANGELOG.md           버전별 변경 기록
 ├── Cargo.toml            Rust 패키지와 의존성
 └── README.md
 ```

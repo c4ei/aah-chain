@@ -103,7 +103,9 @@ mod tests {
         let validator = Wallet::from_seed([1; 32]);
         let attacker = Wallet::from_seed([9; 32]);
         let mut message = ConsensusMessage::prevote(1, 0, &validator, "block-a");
-        message.signature = attacker.sign_bytes(b"위조 서명");
+        // b"..." 바이트 문자열은 ASCII만 허용한다.
+        // 한글처럼 UTF-8 문자는 일반 문자열을 바이트 슬라이스로 변환해 전달한다.
+        message.signature = attacker.sign_bytes("위조 서명".as_bytes());
         assert!(message.verify().is_err());
     }
 
