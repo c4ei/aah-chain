@@ -1,5 +1,22 @@
 # 변경 기록
 
+## 0.0.4 - 2026-07-24
+
+### 추가
+
+- `GenesisConfig` 검증과 결정론적 제네시스 설정 해시를 추가했습니다.
+- BFT 참여 목표, 월별 보상 곡선, 검증자 가중투표와 2/3 초과 확정 로직을
+  추가했습니다.
+- EIP-155 legacy RLP 송금용 `eth_sendRawTransaction`을 추가했습니다.
+- 1MiB 개별 블록 제한과 최대 100MB JSONL 블록 세그먼트 회전을 추가했습니다.
+
+### 제한
+
+- raw transaction은 legacy EIP-155 단순 송금만 지원합니다. EIP-1559,
+  컨트랙트 생성, calldata/EVM 실행은 아직 지원하지 않습니다.
+- 월별 정책 모듈의 실제 보상 발행, 참여 증명, 영구 저장과 거버넌스 RPC는
+  후속 작업입니다.
+
 ## 0.0.3 - 2026-07-24
 
 ### 추가
@@ -23,6 +40,8 @@
 - 큰 `identify::Event`를 `Box`로 감싸 `large_enum_variant` 오류를 수정했습니다.
 - Kademlia 이벤트 값을 명시적으로 소비해 미사용 variant field 경고를 수정했습니다.
 - 사용자 제공 `cargo fmt --check` 로그에 나온 전체 포맷 차이를 반영했습니다.
+- RPC 주소 해석 시 `AccountWallet` 값에 잘못 지정된 `Wallet::address`
+  메서드 참조를 `AccountWallet::address`로 수정했습니다.
 
 ### 제한
 

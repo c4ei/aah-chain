@@ -49,11 +49,16 @@ pub struct Block {
 impl Block {
     /// 모든 노드가 동일하게 시작하는 0번 블록입니다.
     pub fn genesis() -> Self {
+        Self::genesis_with_commitment("aah-devnet-31337")
+    }
+
+    /// 체인 ID, 초기 배분, 검증자 정책을 해시한 commitment를 0번 블록에 묶습니다.
+    pub fn genesis_with_commitment(commitment: &str) -> Self {
         let mut block = Self {
             height: 0,
             previous_hash: "0".repeat(64),
             timestamp: 0,
-            producer: "genesis".into(),
+            producer: format!("genesis:{commitment}"),
             transactions: vec![],
             hash: String::new(),
         };

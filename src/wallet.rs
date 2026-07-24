@@ -55,6 +55,13 @@ impl Default for Wallet {
 }
 
 pub fn verify_transaction(tx: &Transaction) -> Result<(), String> {
+    verify_transaction_for_chain(tx, 31337)
+}
+
+pub fn verify_transaction_for_chain(tx: &Transaction, chain_id: u64) -> Result<(), String> {
+    if tx.signature.starts_with("ethraw:") {
+        return crate::raw_transaction::verify_embedded(tx, chain_id);
+    }
     if tx.from.starts_with("0x") && tx.from.len() == 42 {
         return crate::account::verify_account_signature(
             &tx.from,

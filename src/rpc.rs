@@ -1,4 +1,4 @@
-use crate::{Blockchain, Mempool, Wallet, account::AccountWallet};
+use crate::{Blockchain, GenesisConfig, Mempool, Wallet, account::AccountWallet};
 use axum::{Json, Router, routing::post};
 use serde_json::{Value, json};
 use std::collections::HashMap;
@@ -11,6 +11,7 @@ pub struct RpcConfig {
     pub listen_ip: IpAddr,
     pub port: u16,
     pub chain_id: u64,
+    pub genesis: Option<GenesisConfig>,
 }
 
 impl Default for RpcConfig {
@@ -20,6 +21,7 @@ impl Default for RpcConfig {
             listen_ip: IpAddr::V4(Ipv4Addr::LOCALHOST),
             port: 8545,
             chain_id: 31337,
+            genesis: None,
         }
     }
 }
@@ -52,7 +54,19 @@ impl RpcServer {
         let faucet = AccountWallet::from_private_key([42; 32])
             .expect("고정 개발용 faucet 개인키는 유효해야 합니다.");
         let producer = Wallet::from_seed([43; 32]);
-        let chain = Blockchain::new(vec![(faucet.address(), 1_000_000_000_000_000_000)]);
+        let chain_id = config
+            .genesis
+            .as_ref()
+            .map(|genesis| genesis.chain_id)
+            .unwrap_or(config.chain_id);
+        let chain = match config.genesis.as_ref() {
+            Some(genesis) => Blockchain::from_genesis(genesis)
+                .expect("RpcServer에는 검증된 제네시스 설정을 전달해야 합니다."),
+            None => Blockchain::with_chain_id(
+                chain_id,
+                vec![(faucet.address(), 1_000_000_000_000_000_000)],
+            ),
+        };
         let mut wallets = HashMap::new();
         let faucet_address = faucet.address();
         wallets.insert(faucet_address.clone(), faucet);
@@ -63,7 +77,7 @@ impl RpcServer {
                 wallets,
                 faucet_alias: faucet_address,
                 producer,
-                chain_id: config.chain_id,
+                chain_id,
             })),
             config,
         }
@@ -114,7 +128,7 @@ fn dispatch(
     params: &[Value],
 ) -> Result<Value, (i64, String)> {
     match method {
-        "web3_clientVersion" => Ok(json!("AAH-Chain/v0.0.3/geth-account-compat/rust")),
+        "web3_clientVersion" => Ok(json!("AAH-Chain/v0.0.4/geth-rawtx-compat/rust")),
         "net_version" => {
             let state = read_state(state)?;
             Ok(json!(state.chain_id.to_string()))
@@ -212,12 +226,32 @@ fn dispatch(
         "eth_estimateGas" => Ok(json!("0x5208")),
         "eth_getCode" => Ok(json!("0x")),
         "eth_sendTransaction" | "personal_sendTransaction" => send_transaction(state, params),
-        "eth_sendRawTransaction" => Err((
-            -32004,
-            "v0.0.3은 Ethereum RLP/secp256k1 raw transaction을 아직 지원하지 않습니다.".into(),
-        )),
+        "eth_sendRawTransaction" => send_raw_transaction(state, params),
         _ => Err((-32601, format!("지원하지 않는 JSON-RPC 메서드: {method}"))),
     }
+}
+
+fn send_raw_transaction(
+    shared: &Arc<RwLock<RpcState>>,
+    params: &[Value],
+) -> Result<Value, (i64, String)> {
+    let raw = string_param(params, 0)?;
+    let mut state = write_state(shared)?;
+    let transaction = crate::raw_transaction::decode_legacy(raw, state.chain_id)
+        .map_err(|message| (-32000, message))?;
+    let transaction_hash =
+        crate::raw_transaction::transaction_hash(raw).map_err(|message| (-32602, message))?;
+    state
+        .pool
+        .add(transaction)
+        .map_err(|message| (-32000, message))?;
+    let transactions = state.pool.drain(1_000);
+    let producer = state.producer.address();
+    state
+        .chain
+        .add_block(transactions, producer)
+        .map_err(|message| (-32000, message))?;
+    Ok(json!(transaction_hash))
 }
 
 fn send_transaction(
@@ -268,7 +302,7 @@ fn send_transaction(
         .add(transaction)
         .map_err(|message| (-32000, message))?;
 
-    // v0.0.3 개발 노드는 거래가 들어오면 즉시 작은 블록을 만듭니다.
+    // v0.0.4 개발 노드는 거래가 들어오면 즉시 작은 블록을 만듭니다.
     // 이후 BFT 실행 루프가 결합되면 여기서는 mempool 제출만 수행해야 합니다.
     let transactions = state.pool.drain(1_000);
     let producer = state.producer.address();
@@ -284,7 +318,7 @@ fn resolve_ledger_address(state: &RpcState, address: &str) -> String {
     state
         .wallets
         .get(&normalized)
-        .map(Wallet::address)
+        .map(AccountWallet::address)
         .unwrap_or(normalized)
 }
 
@@ -367,10 +401,10 @@ mod tests {
     }
 
     #[test]
-    fn raw_ethereum_transaction_is_explicitly_rejected() {
+    fn malformed_raw_ethereum_transaction_is_rejected() {
         let shared = RpcServer::new(RpcConfig::default()).state;
         let error = dispatch(&shared, "eth_sendRawTransaction", &[json!("0x00")]).unwrap_err();
-        assert_eq!(error.0, -32004);
+        assert_eq!(error.0, -32000);
     }
 
     #[test]

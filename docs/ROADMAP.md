@@ -16,6 +16,7 @@
 | Step 6-B | 처리완료 | WAL 영속 저장·복구, 재시작 후 로컬 이중서명 방지 |
 | v0.0.2 | 처리완료 | 한글 byte string 컴파일 오류 수정, 간헐 접속 클라이언트 설계 문서 추가 |
 | v0.0.3 | 처리완료 | Rust 1.97 clippy/fmt 수정, secp256k1 Ethereum 주소, BIP-39/44 seed, geth 계정·잔액·nonce·송금 RPC |
+| v0.0.4 | 코어 처리완료 | 제네시스 설정, 참여·보상 곡선, 30일 투표, legacy raw transaction, 1MiB 블록·100MB 세그먼트 제한 |
 
 ## 현재 제한
 
@@ -28,8 +29,8 @@
 - 현재 JSON 저장은 큰 체인에 적합하지 않습니다.
 - 사용자 계정은 Ethereum 표준 secp256k1 주소이지만 합의·P2P 키는 역할 분리를
   위해 Ed25519를 유지합니다.
-- `eth_sendRawTransaction`, EVM bytecode, Solidity 계약 실행은 아직 지원하지 않습니다.
-- v0.0.3 RPC 관리형 개인키는 메모리에만 있으므로 재시작하면 새로 생성한 계정이 사라집니다.
+- `eth_sendRawTransaction`은 legacy 단순 송금만 지원하며 EVM bytecode와 Solidity 계약 실행은 아직 지원하지 않습니다.
+- v0.0.4 RPC 관리형 개인키는 메모리에만 있으므로 재시작하면 새로 생성한 계정이 사라집니다.
 
 ## 다음 단계
 

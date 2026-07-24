@@ -1,8 +1,15 @@
 # geth / EVM 스크립트 호환 범위
 
+## v0.0.4 raw transaction
+
+`eth_sendRawTransaction`은 EIP-155가 적용된 legacy type-0 단순 송금을
+지원합니다. 체인 ID가 `--chain-id`와 다르거나 수신 주소가 없거나 data가
+비어 있지 않으면 거부합니다. 반환값은 raw transaction의 Keccak-256
+해시입니다. EIP-1559 type-2, 컨트랙트 생성과 EVM 실행은 아직 미지원입니다.
+
 ## 목적
 
-v0.0.3은 기존 geth/web3 운영 스크립트 가운데 주소 생성, 계정 목록, 잔액,
+v0.0.4는 기존 geth/web3 운영 스크립트 가운데 주소 생성, 계정 목록, 잔액,
 nonce와 관리형 계정 송금을 먼저 호환합니다. HTTP JSON-RPC 기본 주소는
 `http://127.0.0.1:8545`입니다.
 
@@ -36,11 +43,11 @@ seed 문구는 BIP-39 영어 단어를 사용하며 HD 파생 경로는 MetaMask
 | `personal_unlockAccount` | 개발용 지원 | 관리형 계정 여부만 확인 |
 | `eth_getBalance` | 지원 | `latest` 조회 |
 | `eth_getTransactionCount` | 지원 | 다음 nonce |
-| `eth_gasPrice`, `eth_estimateGas` | 임시 지원 | v0.0.3 고정 개발값 |
+| `eth_gasPrice`, `eth_estimateGas` | 임시 지원 | v0.0.4 고정 개발값 |
 | `eth_getCode` | 지원 | 계약 미지원이므로 `0x` |
 | `eth_sendTransaction` | 개발용 지원 | 관리형 계정이 서명하고 즉시 소형 블록 생성 |
 | `personal_sendTransaction` | 개발용 지원 | `eth_sendTransaction`과 동일 경로 |
-| `eth_sendRawTransaction` | 미지원 | RLP/secp256k1 도입 후 구현 |
+| `eth_sendRawTransaction` | 부분 지원 | EIP-155 legacy 단순 송금 |
 
 ## curl 사용 예
 
@@ -119,8 +126,8 @@ web3.js 버전에 따라 `personal_newAccount`는 provider의 직접 RPC 호출 
 ## 보안 주의
 
 - RPC 기본 리스닝 주소는 localhost입니다.
-- v0.0.3의 관리형 계정은 메모리 기반이라 노드 재시작 후 자동 복구되지 않습니다.
-- `personal_newAccount`의 암호는 v0.0.3에서 실제 암호화에 사용되지 않습니다.
+- v0.0.4의 관리형 계정은 메모리 기반이라 노드 재시작 후 자동 복구되지 않습니다.
+- `personal_newAccount`의 암호는 v0.0.4에서 실제 암호화에 사용되지 않습니다.
 - `aah_newMnemonic` 응답의 seed는 RPC 로그나 화면 캡처에 남기지 말고 오프라인에
   안전하게 보관해야 합니다. seed를 잃으면 복구할 수 없고 노출되면 자산을 잃습니다.
 - 테스트 코인만 사용하세요.
@@ -132,7 +139,7 @@ web3.js 버전에 따라 `personal_newAccount`는 provider의 직접 RPC 호출 
 - 호환: secp256k1 개인키, Ethereum 주소 계산, BIP-39 seed, BIP-44 파생 경로,
   주소·잔액·nonce 관련 JSON-RPC
 - AAH 내부 형식: 현재 코인 거래 서명/직렬화와 블록 형식
-- 미지원: geth V3 암호화 keystore, RLP/EIP-2718 raw transaction, EIP-155
+- 미지원: geth V3 암호화 keystore, EIP-2718/EIP-1559 typed transaction
   서명 복구, receipt/log, EVM bytecode 및 Solidity 계약
 
 따라서 기존 스크립트 중 `eth_accounts`, `eth_getBalance`,
