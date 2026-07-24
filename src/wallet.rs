@@ -34,7 +34,7 @@ impl Wallet {
         hex::encode(self.signing_key.sign(message).to_bytes())
     }
 
-    pub fn sign_transfer(&self, to: Address, amount: u64, fee: u64, nonce: u64) -> Transaction {
+    pub fn sign_transfer(&self, to: Address, amount: u128, fee: u128, nonce: u64) -> Transaction {
         let mut tx = Transaction {
             from: self.address(),
             to,

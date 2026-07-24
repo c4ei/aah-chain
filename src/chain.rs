@@ -264,14 +264,13 @@ fn apply_transactions(
             .amount
             .checked_add(tx.fee)
             .ok_or("송금액과 수수료 합계가 너무 큽니다.")?;
-        let total = u128::from(total);
         let sender = balances.get(&tx.from).copied().unwrap_or(0);
         if sender < total {
             return Err("수수료를 포함한 잔액이 부족합니다.".into());
         }
         balances.insert(tx.from.clone(), sender - total);
-        *balances.entry(tx.to.clone()).or_default() += u128::from(tx.amount);
-        *balances.entry(producer.to_string()).or_default() += u128::from(tx.fee);
+        *balances.entry(tx.to.clone()).or_default() += tx.amount;
+        *balances.entry(producer.to_string()).or_default() += tx.fee;
         nonces.insert(tx.from.clone(), expected_nonce + 1);
     }
     Ok(())

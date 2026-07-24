@@ -270,7 +270,7 @@ fn dispatch(
             let height = if selector == "latest" {
                 state.chain.blocks.last().map(|block| block.height)
             } else {
-                Some(parse_quantity(selector)?)
+                Some(parse_quantity_u64(selector)?)
             };
             Ok(height
                 .and_then(|height| state.chain.block_by_height(height))
@@ -381,18 +381,27 @@ fn send_transaction(
         .get("to")
         .and_then(Value::as_str)
         .ok_or_else(|| (-32602, "to 주소가 필요합니다.".into()))?;
-    let amount = parse_quantity(
+    let amount = parse_quantity_u128(
         request
             .get("value")
             .and_then(Value::as_str)
             .unwrap_or("0x0"),
     )?;
-    let fee = parse_quantity(
+    let gas_price = parse_quantity_u128(
         request
             .get("gasPrice")
             .and_then(Value::as_str)
             .unwrap_or("0x1"),
     )?;
+    let gas_limit = parse_quantity_u128(
+        request
+            .get("gas")
+            .and_then(Value::as_str)
+            .unwrap_or("0x5208"),
+    )?;
+    let fee = gas_price
+        .checked_mul(gas_limit)
+        .ok_or_else(|| (-32602, "gasPrice와 gas의 곱이 u128 범위를 넘습니다.".into()))?;
 
     let mut state = write_state(shared)?;
     let from_alias = normalize_address(from);
@@ -403,7 +412,7 @@ fn send_transaction(
         .ok_or_else(|| (-32000, "노드가 관리하지 않는 from 계정입니다.".into()))?;
     let to_ledger = resolve_ledger_address(&state, to);
     let nonce = match request.get("nonce").and_then(Value::as_str) {
-        Some(value) => parse_quantity(value)?,
+        Some(value) => parse_quantity_u64(value)?,
         None => state.chain.next_nonce(&wallet.address()),
     };
     let transaction = wallet.sign_transfer(to_ledger, amount, fee, nonce);
@@ -495,13 +504,13 @@ fn transaction_json(block: &Block, index: usize, transaction: &Transaction) -> V
         "transactionIndex": quantity(index as u64),
         "from": transaction.from,
         "to": transaction.to,
-        "value": quantity(transaction.amount),
-        "gasPrice": quantity(transaction.fee),
+        "value": quantity_u128(transaction.amount),
+        "gasPrice": quantity_u128(transaction.fee),
         "input": "0x"
     })
 }
 
-fn parse_quantity(value: &str) -> Result<u64, (i64, String)> {
+fn parse_quantity_u64(value: &str) -> Result<u64, (i64, String)> {
     let hex = value
         .strip_prefix("0x")
         .ok_or_else(|| (-32602, "수량은 0x 접두사가 있는 hex여야 합니다.".into()))?;
@@ -509,6 +518,18 @@ fn parse_quantity(value: &str) -> Result<u64, (i64, String)> {
         (
             -32602,
             "수량이 u64 범위를 벗어났거나 잘못되었습니다.".into(),
+        )
+    })
+}
+
+fn parse_quantity_u128(value: &str) -> Result<u128, (i64, String)> {
+    let hex = value
+        .strip_prefix("0x")
+        .ok_or_else(|| (-32602, "수량은 0x 접두사가 있는 hex여야 합니다.".into()))?;
+    u128::from_str_radix(if hex.is_empty() { "0" } else { hex }, 16).map_err(|_| {
+        (
+            -32602,
+            "수량이 u128 범위를 벗어났거나 잘못되었습니다.".into(),
         )
     })
 }

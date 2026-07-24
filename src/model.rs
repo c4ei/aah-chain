@@ -8,8 +8,9 @@ pub type Address = String;
 pub struct Transaction {
     pub from: Address,
     pub to: Address,
-    pub amount: u64,
-    pub fee: u64,
+    /// 최소 단위 기준 금액입니다. 10,000 AAH 같은 정상 잔액도 표현하도록 u128을 씁니다.
+    pub amount: u128,
+    pub fee: u128,
     pub nonce: u64,
     pub signature: String,
 }

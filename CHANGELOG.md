@@ -1,5 +1,13 @@
 # 변경 기록
 
+## 0.0.6-1 - 2026-07-24
+
+- 거래 금액과 수수료를 `u128`로 확장해 18.44 AAH 초과 송금 지원
+- legacy raw transaction의 value를 최대 16바이트로 해석
+- `eth_sendTransaction`의 gasPrice × gas를 실제 수수료로 계산
+- 20 AAH 이상 raw transaction 회귀 테스트 추가
+- 지갑 연동 RPC·nonce·수수료·합의 보강 항목 문서화
+
 ## 0.0.5-1 - 2026-07-24
 
 - 영구 libp2p node key와 재시작 후 고정 PeerId

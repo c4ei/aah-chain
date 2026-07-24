@@ -18,7 +18,7 @@ pub fn decode_legacy(raw_hex: &str, expected_chain_id: u64) -> Result<Transactio
     if to.len() != 20 {
         return Err("현재는 20바이트 수신 주소 송금만 지원합니다.".into());
     }
-    let amount = value_u64(fields[4], "value")?;
+    let amount = value_u128(fields[4], "value")?;
     if !fields[5].is_empty() {
         return Err("EVM calldata는 아직 지원하지 않습니다.".into());
     }
@@ -43,7 +43,7 @@ pub fn decode_legacy(raw_hex: &str, expected_chain_id: u64) -> Result<Transactio
         encode_u64(gas_price),
         encode_u64(gas_limit),
         encode_bytes(to),
-        encode_u64(amount),
+        encode_u128(amount),
         encode_bytes(&[]),
         encode_u64(chain_id),
         encode_bytes(&[]),
@@ -55,9 +55,9 @@ pub fn decode_legacy(raw_hex: &str, expected_chain_id: u64) -> Result<Transactio
     let point = key.to_encoded_point(false);
     let address_hash = Keccak256::digest(&point.as_bytes()[1..]);
     let from = format!("0x{}", hex::encode(&address_hash[12..]));
-    let fee = gas_price
-        .checked_mul(gas_limit)
-        .ok_or("gasPrice와 gasLimit의 곱이 u64 범위를 넘습니다.")?;
+    let fee = u128::from(gas_price)
+        .checked_mul(u128::from(gas_limit))
+        .ok_or("gasPrice와 gasLimit의 곱이 u128 범위를 넘습니다.")?;
     Ok(Transaction {
         from,
         to: format!("0x{}", hex::encode(to)),
@@ -103,6 +103,15 @@ fn value_u64(value: &[u8], name: &str) -> Result<u64, String> {
     Ok(value
         .iter()
         .fold(0u64, |acc, byte| (acc << 8) | u64::from(*byte)))
+}
+
+fn value_u128(value: &[u8], name: &str) -> Result<u128, String> {
+    if value.len() > 16 {
+        return Err(format!("{name}이 u128 범위를 벗어났습니다."));
+    }
+    Ok(value
+        .iter()
+        .fold(0u128, |acc, byte| (acc << 8) | u128::from(*byte)))
 }
 
 fn padded_scalar(value: &[u8], name: &str) -> Result<[u8; 32], String> {
@@ -171,6 +180,15 @@ fn encode_u64(value: u64) -> Vec<u8> {
     }
     let bytes = value.to_be_bytes();
     let first = bytes.iter().position(|byte| *byte != 0).unwrap_or(7);
+    encode_bytes(&bytes[first..])
+}
+
+fn encode_u128(value: u128) -> Vec<u8> {
+    if value == 0 {
+        return encode_bytes(&[]);
+    }
+    let bytes = value.to_be_bytes();
+    let first = bytes.iter().position(|byte| *byte != 0).unwrap_or(15);
     encode_bytes(&bytes[first..])
 }
 
@@ -260,5 +278,44 @@ mod tests {
         assert_eq!(transaction.fee, 21_000);
         assert_eq!(transaction.nonce, 0);
         verify_embedded(&transaction, chain_id).unwrap();
+    }
+
+    #[test]
+    fn legacy_transfer_accepts_value_larger_than_u64() {
+        let chain_id = 21_004;
+        let amount = u128::from(u64::MAX) + 1;
+        let to = [3u8; 20];
+        let signing = encode_list(&[
+            encode_u64(0),
+            encode_u64(1),
+            encode_u64(21_000),
+            encode_bytes(&to),
+            encode_u128(amount),
+            encode_bytes(&[]),
+            encode_u64(chain_id),
+            encode_bytes(&[]),
+            encode_bytes(&[]),
+        ]);
+        let key = SigningKey::from_bytes((&[1u8; 32]).into()).unwrap();
+        let (signature, recovery_id) = key
+            .sign_digest_recoverable(Keccak256::new_with_prefix(&signing))
+            .unwrap();
+        let signature_bytes = signature.to_bytes();
+        let v = 35 + chain_id * 2 + u64::from(recovery_id.to_byte());
+        let raw = encode_list(&[
+            encode_u64(0),
+            encode_u64(1),
+            encode_u64(21_000),
+            encode_bytes(&to),
+            encode_u128(amount),
+            encode_bytes(&[]),
+            encode_u64(v),
+            encode_bytes(&signature_bytes[..32]),
+            encode_bytes(&signature_bytes[32..]),
+        ]);
+        assert_eq!(
+            decode_legacy(&hex::encode(raw), chain_id).unwrap().amount,
+            amount
+        );
     }
 }
