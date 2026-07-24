@@ -29,23 +29,46 @@ struct Args {
     rpc_addr: String,
 
     /// eth_chainId와 net_version에서 반환할 체인 ID
-    #[arg(long, default_value_t = 31337)]
+    #[arg(long, default_value_t = 21004)]
     chain_id: u64,
 
     /// 모든 운영 노드가 공유할 제네시스 JSON 설정
     #[arg(long)]
     genesis: Option<PathBuf>,
+
+    /// 재시작해도 PeerId를 유지할 영구 node key 파일
+    #[arg(long, default_value = "data/node.key")]
+    node_key: PathBuf,
+
+    /// bootstrap 주소 배열이 든 JSON 파일
+    #[arg(long, default_value = "config/bootstrap.json")]
+    bootstrap: PathBuf,
 }
 
 #[tokio::main]
 async fn main() -> Result<(), String> {
     let args = Args::parse();
+    let mut bootstrap_peers = args.peer;
+    if args.bootstrap.exists() {
+        let json = std::fs::read_to_string(&args.bootstrap)
+            .map_err(|e| format!("bootstrap 파일 읽기 실패: {e}"))?;
+        let values: Vec<String> =
+            serde_json::from_str(&json).map_err(|e| format!("bootstrap JSON 오류: {e}"))?;
+        for value in values {
+            bootstrap_peers.push(
+                value
+                    .parse()
+                    .map_err(|e| format!("bootstrap 주소 오류: {e}"))?,
+            );
+        }
+    }
     let config = NetworkConfig {
         listen_port: args.port,
-        bootstrap_peers: args.peer,
+        bootstrap_peers,
         max_message_bytes: args.max_message_bytes,
         idle_timeout: Duration::from_secs(30),
         ban_duration: Duration::from_secs(10 * 60),
+        node_key_path: args.node_key,
     };
     let (peer_id, _commands, mut events) = P2pNode::new(config).run().await?;
     let rpc_ip =

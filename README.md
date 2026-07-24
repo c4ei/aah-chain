@@ -1,7 +1,7 @@
 # aah-chain
 
 AAH Chain을 배우며 확장하는 Rust 기반 경량 블록체인 테스트넷입니다.
-현재 배포 버전은 `0.0.4`이며, geth/web3 계정·잔액·송금 스크립트를 위한
+현재 배포 버전은 `0.0.5-1`이며, geth/web3 계정·잔액·송금 스크립트를 위한
 HTTP JSON-RPC 호환 계층을 추가했습니다.
 
 > 주의: 학습·사설 테스트넷용 코드입니다. 실제 자산을 맡기는 메인넷에 사용하지 마세요.
@@ -21,6 +21,8 @@ HTTP JSON-RPC 호환 계층을 추가했습니다.
 - stake 가중치 2/3 초과 prevote/precommit BFT 상태기계
 - 합의 투표 Ed25519 서명 검증
 - 합의 WAL 저장·복구와 로컬 이중서명 방지
+- 영구 node key, 고정 PeerId와 bootstrap JSON
+- 서명 proposal, timeout/round change, 확정 후 저장과 신규 노드 블록 동기화 코어
 - 주요 소스의 한국어 학습 주석
 - 필요할 때만 접속하는 모바일·웹 클라이언트 구조 문서
 - geth 호환 JSON-RPC: 계정 생성·개인키/seed 가져오기, 잔액, nonce, 관리형 계정 송금
@@ -30,6 +32,8 @@ HTTP JSON-RPC 호환 계층을 추가했습니다.
 간헐 접속 클라이언트 설계는 [docs/CLIENT.md](docs/CLIENT.md)를 참고하세요.
 버전별 변경 내용은 [CHANGELOG.md](CHANGELOG.md)에 기록합니다.
 geth 호환 범위와 예제는 [docs/GETH_COMPAT.md](docs/GETH_COMPAT.md)를 참고하세요.
+4노드 BFT 범위는 [docs/BFT_4NODE.md](docs/BFT_4NODE.md), 제네시스 AAH와
+이전 방법은 [docs/GENESIS_AAH_TRANSFER.md](docs/GENESIS_AAH_TRANSFER.md)를 참고하세요.
 
 ## Ubuntu 설치
 

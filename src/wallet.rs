@@ -55,7 +55,7 @@ impl Default for Wallet {
 }
 
 pub fn verify_transaction(tx: &Transaction) -> Result<(), String> {
-    verify_transaction_for_chain(tx, 31337)
+    verify_transaction_for_chain(tx, 21004)
 }
 
 pub fn verify_transaction_for_chain(tx: &Transaction, chain_id: u64) -> Result<(), String> {

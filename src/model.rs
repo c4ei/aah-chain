@@ -49,7 +49,7 @@ pub struct Block {
 impl Block {
     /// 모든 노드가 동일하게 시작하는 0번 블록입니다.
     pub fn genesis() -> Self {
-        Self::genesis_with_commitment("aah-devnet-31337")
+        Self::genesis_with_commitment("aah-devnet-21004")
     }
 
     /// 체인 ID, 초기 배분, 검증자 정책을 해시한 commitment를 0번 블록에 묶습니다.

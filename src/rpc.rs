@@ -20,7 +20,7 @@ impl Default for RpcConfig {
             // 개발 기본값은 외부에 노출되지 않는 localhost입니다.
             listen_ip: IpAddr::V4(Ipv4Addr::LOCALHOST),
             port: 8545,
-            chain_id: 31337,
+            chain_id: 21004,
             genesis: None,
         }
     }

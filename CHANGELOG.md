@@ -1,5 +1,21 @@
 # 변경 기록
 
+## 0.0.5-1 - 2026-07-24
+
+- 영구 libp2p node key와 재시작 후 고정 PeerId
+- `config/bootstrap.json` bootstrap 목록
+- 서명된 proposal 검증, timeout/round change, 확정 후 저장 BFT 실행 코어
+- 신규 노드 확정 블록 배치 동기화
+- 4검증자 합의·미확정 미저장·timeout·신규 노드 sync 통합 테스트
+- 제네시스 AAH 총량과 개인키 보유 계좌 이전 문서
+
+## 0.0.4-1 - 2026-07-24
+
+### 수정
+
+- `src/storage.rs`의 `load()` 함수를 테스트 모듈 앞으로 이동해 Rust 1.97의
+  `clippy::items-after-test-module` 오류를 제거했습니다.
+
 ## 0.0.4 - 2026-07-24
 
 ### 추가

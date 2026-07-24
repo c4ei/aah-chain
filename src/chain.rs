@@ -22,7 +22,7 @@ pub struct Blockchain {
 impl Blockchain {
     /// 제네시스 잔액과 0번 블록으로 새 체인을 시작합니다.
     pub fn new(initial_balances: Vec<(Address, u64)>) -> Self {
-        Self::with_chain_id(31337, initial_balances)
+        Self::with_chain_id(21004, initial_balances)
     }
 
     pub fn with_chain_id(chain_id: u64, initial_balances: Vec<(Address, u64)>) -> Self {

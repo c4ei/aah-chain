@@ -4,7 +4,7 @@
 `GenesisConfig`와 `genesis_hash`를 가져야 합니다. 운영망 시작 뒤 체인 ID,
 초기 배분, 검증자 집합을 바꾸면 서로 다른 체인이 됩니다.
 
-`config/genesis.example.json`의 `31337`은 로컬 개발 전용입니다. 운영 체인
+`config/genesis.example.json`의 `21004`은 로컬 개발 전용입니다. 운영 체인
 ID는 공개 네트워크와 중복 여부를 확인하고 확정한 뒤 별도 설정으로 배포해야
 합니다. EIP-155 raw transaction의 체인 ID가 노드 설정과 다르면 거부됩니다.
 

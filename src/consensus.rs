@@ -1,3 +1,4 @@
+use crate::model::Block;
 use crate::wallet::{Wallet, verify_signature};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
@@ -31,6 +32,54 @@ pub enum ConsensusPhase {
 pub enum VoteType {
     Prevote,
     Precommit,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SignedProposal {
+    pub height: u64,
+    pub round: u32,
+    pub proposer_id: String,
+    pub block: Block,
+    pub signature: String,
+}
+
+impl SignedProposal {
+    pub fn new(height: u64, round: u32, proposer: &Wallet, block: Block) -> Self {
+        let proposer_id = proposer.address();
+        let signature = proposer.sign_bytes(&Self::unsigned_bytes(
+            height,
+            round,
+            &proposer_id,
+            &block.hash,
+        ));
+        Self {
+            height,
+            round,
+            proposer_id,
+            block,
+            signature,
+        }
+    }
+
+    fn unsigned_bytes(height: u64, round: u32, proposer_id: &str, block_hash: &str) -> Vec<u8> {
+        let mut bytes = b"AAH-PROPOSAL-V1".to_vec();
+        bytes.extend_from_slice(&height.to_be_bytes());
+        bytes.extend_from_slice(&round.to_be_bytes());
+        push_text(&mut bytes, proposer_id);
+        push_text(&mut bytes, block_hash);
+        bytes
+    }
+
+    pub fn verify(&self) -> Result<(), String> {
+        if self.block.height != self.height || self.block.hash != self.block.calculate_hash() {
+            return Err("제안 블록의 높이 또는 해시가 올바르지 않습니다.".into());
+        }
+        verify_signature(
+            &self.proposer_id,
+            &Self::unsigned_bytes(self.height, self.round, &self.proposer_id, &self.block.hash),
+            &self.signature,
+        )
+    }
 }
 
 /// 네트워크로 전달되는 BFT 합의 메시지입니다.
@@ -228,6 +277,31 @@ impl BftConsensus {
         Ok(())
     }
 
+    pub fn handle_proposal(&mut self, proposal: &SignedProposal) -> Result<(), String> {
+        if proposal.height != self.height || proposal.round != self.round {
+            return Err("현재 높이/라운드와 다른 제안입니다.".into());
+        }
+        proposal.verify()?;
+        self.propose(&proposal.proposer_id, &proposal.block.hash)
+    }
+
+    /// 제안 또는 투표 timeout 시 다음 라운드로 이동합니다.
+    pub fn on_timeout(&mut self) -> Result<u32, String> {
+        if self.phase == ConsensusPhase::Finalized {
+            return Err("이미 확정된 높이는 라운드를 변경할 수 없습니다.".into());
+        }
+        let next = self
+            .round
+            .checked_add(1)
+            .ok_or("라운드가 범위를 넘었습니다.")?;
+        self.start_round(self.height, next)?;
+        Ok(next)
+    }
+
+    pub fn round(&self) -> u32 {
+        self.round
+    }
+
     pub fn handle(&mut self, message: ConsensusMessage) -> Result<(), String> {
         if message.height != self.height || message.round != self.round {
             return Err("현재 높이/라운드와 다른 투표입니다.".into());
@@ -238,6 +312,7 @@ impl BftConsensus {
         message.verify()?;
         match (self.phase, message.vote_type) {
             (ConsensusPhase::Prevote, VoteType::Prevote)
+            | (ConsensusPhase::Precommit, VoteType::Prevote)
             | (ConsensusPhase::Precommit, VoteType::Precommit) => {}
             _ => return Err("현재 합의 단계와 투표 종류가 일치하지 않습니다.".into()),
         }

@@ -1,4 +1,4 @@
-use crate::consensus::ConsensusMessage;
+use crate::consensus::{ConsensusMessage, SignedProposal};
 use crate::model::Block;
 use crate::peer_guard::{PeerDecision, PeerGuard};
 use futures::StreamExt;
@@ -8,6 +8,7 @@ use libp2p::{
     swarm::{NetworkBehaviour, SwarmEvent},
 };
 use serde::{Deserialize, Serialize};
+use std::path::PathBuf;
 use std::time::Duration;
 use tokio::sync::mpsc;
 
@@ -22,6 +23,7 @@ pub struct NetworkConfig {
     pub max_message_bytes: usize,
     pub idle_timeout: Duration,
     pub ban_duration: Duration,
+    pub node_key_path: PathBuf,
 }
 
 impl Default for NetworkConfig {
@@ -32,6 +34,7 @@ impl Default for NetworkConfig {
             max_message_bytes: 512 * 1024,
             idle_timeout: Duration::from_secs(30),
             ban_duration: Duration::from_secs(10 * 60),
+            node_key_path: PathBuf::from("data/node.key"),
         }
     }
 }
@@ -41,14 +44,20 @@ impl Default for NetworkConfig {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum WireMessage {
     Block(Block),
+    Proposal(SignedProposal),
     Consensus(ConsensusMessage),
+    SyncRequest { from_height: u64 },
+    SyncResponse { blocks: Vec<Block> },
 }
 
 /// 노드 코어가 비동기 P2P 작업에 보내는 명령입니다.
 #[derive(Clone, Debug)]
 pub enum NetworkCommand {
     PublishBlock(Block),
+    PublishProposal(SignedProposal),
     PublishConsensus(ConsensusMessage),
+    PublishSyncRequest { from_height: u64 },
+    PublishSyncResponse { blocks: Vec<Block> },
     Dial(Multiaddr),
     Shutdown,
 }
@@ -66,6 +75,18 @@ pub enum NetworkEvent {
     ConsensusReceived {
         source: PeerId,
         message: ConsensusMessage,
+    },
+    ProposalReceived {
+        source: PeerId,
+        proposal: SignedProposal,
+    },
+    SyncRequestReceived {
+        source: PeerId,
+        from_height: u64,
+    },
+    SyncResponseReceived {
+        source: PeerId,
+        blocks: Vec<Block>,
     },
 }
 
@@ -132,7 +153,8 @@ impl P2pNode {
         let max_message_bytes = config.max_message_bytes;
         let idle_timeout = config.idle_timeout;
 
-        let mut swarm = SwarmBuilder::with_new_identity()
+        let identity = crate::node_key::load_or_create_node_key(&config.node_key_path)?;
+        let mut swarm = SwarmBuilder::with_existing_identity(identity)
             .with_tokio()
             .with_quic()
             .with_behaviour(
@@ -194,8 +216,17 @@ impl P2pNode {
                             Some(NetworkCommand::PublishBlock(block)) => {
                                 publish(&mut swarm, BLOCK_TOPIC, &WireMessage::Block(block));
                             }
+                            Some(NetworkCommand::PublishProposal(proposal)) => {
+                                publish(&mut swarm, CONSENSUS_TOPIC, &WireMessage::Proposal(proposal));
+                            }
                             Some(NetworkCommand::PublishConsensus(message)) => {
                                 publish(&mut swarm, CONSENSUS_TOPIC, &WireMessage::Consensus(message));
+                            }
+                            Some(NetworkCommand::PublishSyncRequest { from_height }) => {
+                                publish(&mut swarm, BLOCK_TOPIC, &WireMessage::SyncRequest { from_height });
+                            }
+                            Some(NetworkCommand::PublishSyncResponse { blocks }) => {
+                                publish(&mut swarm, BLOCK_TOPIC, &WireMessage::SyncResponse { blocks });
                             }
                             Some(NetworkCommand::Dial(address)) => {
                                 if let Err(error) = swarm.dial(address) {
@@ -317,6 +348,18 @@ async fn handle_swarm_event(
                 WireMessage::Consensus(message) => NetworkEvent::ConsensusReceived {
                     source: propagation_source,
                     message,
+                },
+                WireMessage::Proposal(proposal) => NetworkEvent::ProposalReceived {
+                    source: propagation_source,
+                    proposal,
+                },
+                WireMessage::SyncRequest { from_height } => NetworkEvent::SyncRequestReceived {
+                    source: propagation_source,
+                    from_height,
+                },
+                WireMessage::SyncResponse { blocks } => NetworkEvent::SyncResponseReceived {
+                    source: propagation_source,
+                    blocks,
                 },
             };
             event_tx
