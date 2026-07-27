@@ -10,7 +10,7 @@ pub struct GenesisConfig {
     pub chain_id: u64,
     pub network_name: String,
     pub genesis_time: u64,
-    /// 최소 단위(1 AAH = 10^18)입니다. 운영 배분량이 u64를 넘을 수 있어 u128을 씁니다.
+    /// 최소 단위(1 IEUM = 10^18)입니다. 운영 배분량이 u64를 넘을 수 있어 u128을 씁니다.
     pub initial_balances: Vec<(Address, u128)>,
     pub validators: Vec<Validator>,
     pub max_block_bytes: u64,
@@ -63,7 +63,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn bundled_genesis_supports_eighty_thousand_aah() {
+    fn bundled_genesis_supports_eighty_thousand_ieum() {
         let genesis: GenesisConfig =
             serde_json::from_str(include_str!("../config/genesis.json")).unwrap();
         genesis.validate().unwrap();

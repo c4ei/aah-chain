@@ -7,7 +7,7 @@
 - `gasPrice × gasLimit`을 `u128`로 안전하게 계산
 - 노드 관리 계정의 `eth_sendTransaction`도 gas limit을 포함해 수수료 계산
 
-이 변경으로 기존 `u64` 최대값 때문에 약 18.44 AAH를 넘는 거래가 거부되던 제한이 제거된다.
+이 변경으로 기존 `u64` 최대값 때문에 약 18.44 IEUM를 넘는 거래가 거부되던 제한이 제거된다.
 
 ## 호환성 주의
 
@@ -31,5 +31,5 @@ cargo test
 cargo clippy --all-targets --all-features -- -D warnings
 ```
 
-지갑에서는 제네시스 잔액이 충분한 테스트 계정으로 20 AAH 이상을 전송하고,
+지갑에서는 제네시스 잔액이 충분한 테스트 계정으로 20 IEUM 이상을 전송하고,
 `eth_getTransactionReceipt`와 송수신 잔액을 함께 확인한다.

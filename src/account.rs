@@ -65,7 +65,7 @@ impl AccountWallet {
         ethereum_address(self.signing_key.verifying_key())
     }
 
-    /// 내부 AAH 거래 서명은 공개키와 ECDSA 서명을 함께 담습니다.
+    /// 내부 IEUM 거래 서명은 공개키와 ECDSA 서명을 함께 담습니다.
     ///
     /// 주소와 키는 geth 호환이지만 이 직렬화는 Ethereum RLP raw transaction이 아닙니다.
     pub fn sign_bytes(&self, message: &[u8]) -> String {

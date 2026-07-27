@@ -1,16 +1,16 @@
-# AAH 개발명에서 IEUM으로 변경
+# IEUM 개발명에서 IEUM으로 변경
 
 ## 구분
 
 | 항목 | 기존 운영 체인 | 새 Rust 체인 |
 |---|---|---|
-| 이름 | AAH | IEUM |
+| 이름 | IEUM | IEUM |
 | 구현 | geth/Clique | Rust PoS/BFT |
 | Chain ID | 21133 | 21004 |
-| 코인 심볼 | AAH | IEUM |
+| 코인 심볼 | IEUM | IEUM |
 | 프로젝트 | 기존 운영 서비스 | `ieum-chain` |
 
-AAH 운영 체인은 이름이나 Chain ID를 변경하지 않습니다. 이 저장소에서 개발 중인
+IEUM 운영 체인은 이름이나 Chain ID를 변경하지 않습니다. 이 저장소에서 개발 중인
 새 체인만 IEUM으로 부릅니다.
 
 ## 호환성 주의

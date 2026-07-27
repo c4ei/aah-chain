@@ -40,7 +40,7 @@ mod tests {
 
     #[test]
     fn persistent_key_keeps_peer_id() {
-        let path = std::env::temp_dir().join(format!("aah-node-key-{}", std::process::id()));
+        let path = std::env::temp_dir().join(format!("ieum-node-key-{}", std::process::id()));
         let first = load_or_create_node_key(&path).unwrap();
         let second = load_or_create_node_key(&path).unwrap();
         assert_eq!(

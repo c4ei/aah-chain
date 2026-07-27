@@ -11,7 +11,7 @@ Explorer는 HTTP JSON-RPC `127.0.0.1:8545`에 연결합니다. 공개 인터넷�
 - `eth_getBlockByHash(hash, fullTransactions)`
 - `eth_getTransactionByHash`
 - `eth_getTransactionReceipt`
-- `aah_getStorageStatus`
+- `ieum_getStorageStatus`
 
 예:
 

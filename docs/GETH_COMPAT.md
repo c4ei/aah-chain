@@ -27,7 +27,7 @@ seed 문구는 BIP-39 영어 단어를 사용하며 HD 파생 경로는 MetaMask
 
 | 메서드 | 상태 | 설명 |
 |---|---|---|
-| `web3_clientVersion` | 지원 | AAH 노드 버전 |
+| `web3_clientVersion` | 지원 | IEUM 노드 버전 |
 | `net_version` | 지원 | 10진수 chain ID |
 | `net_listening`, `net_peerCount` | 지원 | 네트워크 기본 상태 |
 | `rpc_modules` | 지원 | 활성 namespace 목록 |
@@ -38,8 +38,8 @@ seed 문구는 BIP-39 영어 단어를 사용하며 HD 파생 경로는 MetaMask
 | `eth_coinbase` | 지원 | 개발용 faucet 계정 |
 | `personal_newAccount` | 개발용 지원 | 암호는 아직 저장하지 않음 |
 | `personal_importRawKey` | 개발용 지원 | geth형 32바이트 secp256k1 개인키 가져오기 |
-| `aah_newMnemonic` | AAH 확장 | BIP-39 12단어 및 0번 계정 생성 |
-| `aah_importMnemonic` | AAH 확장 | seed와 index로 표준 HD 계정 복원 |
+| `ieum_newMnemonic` | IEUM 확장 | BIP-39 12단어 및 0번 계정 생성 |
+| `ieum_importMnemonic` | IEUM 확장 | seed와 index로 표준 HD 계정 복원 |
 | `personal_unlockAccount` | 개발용 지원 | 관리형 계정 여부만 확인 |
 | `eth_getBalance` | 지원 | `latest` 조회 |
 | `eth_getTransactionCount` | 지원 | 다음 nonce |
@@ -80,7 +80,7 @@ BIP-39 seed와 첫 주소 생성:
 ```bash
 curl -s http://127.0.0.1:8545 \
   -H 'content-type: application/json' \
-  --data '{"jsonrpc":"2.0","id":4,"method":"aah_newMnemonic","params":[]}'
+  --data '{"jsonrpc":"2.0","id":4,"method":"ieum_newMnemonic","params":[]}'
 ```
 
 기존 seed의 index 0 주소 복원:
@@ -88,7 +88,7 @@ curl -s http://127.0.0.1:8545 \
 ```bash
 curl -s http://127.0.0.1:8545 \
   -H 'content-type: application/json' \
-  --data '{"jsonrpc":"2.0","id":5,"method":"aah_importMnemonic","params":["영어 seed 12단어",0]}'
+  --data '{"jsonrpc":"2.0","id":5,"method":"ieum_importMnemonic","params":["영어 seed 12단어",0]}'
 ```
 
 잔액 조회:
@@ -128,7 +128,7 @@ web3.js 버전에 따라 `personal_newAccount`는 provider의 직접 RPC 호출 
 - RPC 기본 리스닝 주소는 localhost입니다.
 - v0.0.4의 관리형 계정은 메모리 기반이라 노드 재시작 후 자동 복구되지 않습니다.
 - `personal_newAccount`의 암호는 v0.0.4에서 실제 암호화에 사용되지 않습니다.
-- `aah_newMnemonic` 응답의 seed는 RPC 로그나 화면 캡처에 남기지 말고 오프라인에
+- `ieum_newMnemonic` 응답의 seed는 RPC 로그나 화면 캡처에 남기지 말고 오프라인에
   안전하게 보관해야 합니다. seed를 잃으면 복구할 수 없고 노출되면 자산을 잃습니다.
 - 테스트 코인만 사용하세요.
 - 외부 공개 RPC에는 인증, TLS reverse proxy, 요청 속도 제한과 CORS 정책이
@@ -138,7 +138,7 @@ web3.js 버전에 따라 `personal_newAccount`는 provider의 직접 RPC 호출 
 
 - 호환: secp256k1 개인키, Ethereum 주소 계산, BIP-39 seed, BIP-44 파생 경로,
   주소·잔액·nonce 관련 JSON-RPC
-- AAH 내부 형식: 현재 코인 거래 서명/직렬화와 블록 형식
+- IEUM 내부 형식: 현재 코인 거래 서명/직렬화와 블록 형식
 - 미지원: geth V3 암호화 keystore, EIP-2718/EIP-1559 typed transaction
   서명 복구, receipt/log, EVM bytecode 및 Solidity 계약
 

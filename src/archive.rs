@@ -300,7 +300,7 @@ mod tests {
 
     #[test]
     fn month_change_creates_checkpoint_and_backup() {
-        let root = std::env::temp_dir().join(format!("aah-archive-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("ieum-archive-{}", std::process::id()));
         let store = ArchiveStore::new(&root, 100_000_000).unwrap();
         let mut chain = Blockchain::new(vec![]);
         let first = Block::new(1, chain.blocks[0].hash.clone(), 1, "p".into(), vec![]);

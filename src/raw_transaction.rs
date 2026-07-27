@@ -2,7 +2,7 @@ use crate::model::Transaction;
 use k256::ecdsa::{RecoveryId, Signature, VerifyingKey};
 use sha3::{Digest, Keccak256};
 
-/// EIP-155 legacy(9개 RLP 필드) 송금 거래를 검증해 AAH 거래로 변환합니다.
+/// EIP-155 legacy(9개 RLP 필드) 송금 거래를 검증해 IEUM 거래로 변환합니다.
 /// 컨트랙트 생성과 calldata 실행은 EVM이 추가되기 전까지 거부합니다.
 pub fn decode_legacy(raw_hex: &str, expected_chain_id: u64) -> Result<Transaction, String> {
     let raw = hex::decode(raw_hex.trim_start_matches("0x"))

@@ -3,10 +3,9 @@ use crate::model::Block;
 use crate::peer_guard::{PeerDecision, PeerGuard};
 use futures::StreamExt;
 use libp2p::{
-    gossipsub, identify, kad, mdns,
+    Multiaddr, PeerId, SwarmBuilder, gossipsub, identify, kad, mdns,
     multiaddr::Protocol,
     swarm::{NetworkBehaviour, SwarmEvent},
-    Multiaddr, PeerId, SwarmBuilder,
 };
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
@@ -60,7 +59,10 @@ pub enum NetworkEvent {
     PeerDiscovered(PeerId),
     PeerConnected(PeerId),
     PeerDisconnected(PeerId),
-    BlockReceived { source: PeerId, block: Block },
+    BlockReceived {
+        source: PeerId,
+        block: Block,
+    },
     ConsensusReceived {
         source: PeerId,
         message: ConsensusMessage,
@@ -68,8 +70,8 @@ pub enum NetworkEvent {
 }
 
 #[derive(NetworkBehaviour)]
-#[behaviour(to_swarm = "AahBehaviourEvent")]
-struct AahBehaviour {
+#[behaviour(to_swarm = "IeumBehaviourEvent")]
+struct IeumBehaviour {
     gossipsub: gossipsub::Behaviour,
     mdns: mdns::tokio::Behaviour,
     kademlia: kad::Behaviour<kad::store::MemoryStore>,
@@ -77,29 +79,29 @@ struct AahBehaviour {
 }
 
 #[derive(Debug)]
-enum AahBehaviourEvent {
+enum IeumBehaviourEvent {
     Gossipsub(gossipsub::Event),
     Mdns(mdns::Event),
     Kademlia(kad::Event),
     Identify(identify::Event),
 }
 
-impl From<gossipsub::Event> for AahBehaviourEvent {
+impl From<gossipsub::Event> for IeumBehaviourEvent {
     fn from(value: gossipsub::Event) -> Self {
         Self::Gossipsub(value)
     }
 }
-impl From<mdns::Event> for AahBehaviourEvent {
+impl From<mdns::Event> for IeumBehaviourEvent {
     fn from(value: mdns::Event) -> Self {
         Self::Mdns(value)
     }
 }
-impl From<kad::Event> for AahBehaviourEvent {
+impl From<kad::Event> for IeumBehaviourEvent {
     fn from(value: kad::Event) -> Self {
         Self::Kademlia(value)
     }
 }
-impl From<identify::Event> for AahBehaviourEvent {
+impl From<identify::Event> for IeumBehaviourEvent {
     fn from(value: identify::Event) -> Self {
         Self::Identify(value)
     }
@@ -132,37 +134,37 @@ impl P2pNode {
         let mut swarm = SwarmBuilder::with_new_identity()
             .with_tokio()
             .with_quic()
-            .with_behaviour(move |key| -> Result<AahBehaviour, Box<dyn std::error::Error + Send + Sync>> {
-                let peer_id = PeerId::from(key.public());
-                let gossip_config = gossipsub::ConfigBuilder::default()
-                    .max_transmit_size(max_message_bytes)
-                    .validation_mode(gossipsub::ValidationMode::Strict)
-                    .heartbeat_interval(Duration::from_secs(1))
-                    .build()?;
-                let mut gossipsub = gossipsub::Behaviour::new(
-                    gossipsub::MessageAuthenticity::Signed(key.clone()),
-                    gossip_config,
-                )?;
-                gossipsub
-                    .subscribe(&gossipsub::IdentTopic::new(BLOCK_TOPIC))?;
-                gossipsub
-                    .subscribe(&gossipsub::IdentTopic::new(CONSENSUS_TOPIC))?;
+            .with_behaviour(
+                move |key| -> Result<IeumBehaviour, Box<dyn std::error::Error + Send + Sync>> {
+                    let peer_id = PeerId::from(key.public());
+                    let gossip_config = gossipsub::ConfigBuilder::default()
+                        .max_transmit_size(max_message_bytes)
+                        .validation_mode(gossipsub::ValidationMode::Strict)
+                        .heartbeat_interval(Duration::from_secs(1))
+                        .build()?;
+                    let mut gossipsub = gossipsub::Behaviour::new(
+                        gossipsub::MessageAuthenticity::Signed(key.clone()),
+                        gossip_config,
+                    )?;
+                    gossipsub.subscribe(&gossipsub::IdentTopic::new(BLOCK_TOPIC))?;
+                    gossipsub.subscribe(&gossipsub::IdentTopic::new(CONSENSUS_TOPIC))?;
 
-                let mdns = mdns::tokio::Behaviour::new(mdns::Config::default(), peer_id)?;
-                let store = kad::store::MemoryStore::new(peer_id);
-                let mut kademlia = kad::Behaviour::new(peer_id, store);
-                kademlia.set_mode(Some(kad::Mode::Server));
-                let identify = identify::Behaviour::new(identify::Config::new(
-                    "/ieum-chain/1.0.0".into(),
-                    key.public(),
-                ));
-                Ok(AahBehaviour {
-                    gossipsub,
-                    mdns,
-                    kademlia,
-                    identify,
-                })
-            })
+                    let mdns = mdns::tokio::Behaviour::new(mdns::Config::default(), peer_id)?;
+                    let store = kad::store::MemoryStore::new(peer_id);
+                    let mut kademlia = kad::Behaviour::new(peer_id, store);
+                    kademlia.set_mode(Some(kad::Mode::Server));
+                    let identify = identify::Behaviour::new(identify::Config::new(
+                        "/ieum-chain/1.0.0".into(),
+                        key.public(),
+                    ));
+                    Ok(IeumBehaviour {
+                        gossipsub,
+                        mdns,
+                        kademlia,
+                        identify,
+                    })
+                },
+            )
             .map_err(|error| error.to_string())?
             .with_swarm_config(|cfg| cfg.with_idle_connection_timeout(idle_timeout))
             .build();
@@ -222,7 +224,7 @@ impl P2pNode {
 }
 
 fn add_bootstrap_address(
-    swarm: &mut libp2p::Swarm<AahBehaviour>,
+    swarm: &mut libp2p::Swarm<IeumBehaviour>,
     mut address: Multiaddr,
 ) -> Result<(), String> {
     let peer_id = match address.pop() {
@@ -237,7 +239,7 @@ fn add_bootstrap_address(
     swarm.dial(address).map_err(|error| error.to_string())
 }
 
-fn publish(swarm: &mut libp2p::Swarm<AahBehaviour>, topic: &str, message: &WireMessage) {
+fn publish(swarm: &mut libp2p::Swarm<IeumBehaviour>, topic: &str, message: &WireMessage) {
     let Ok(bytes) = serde_json::to_vec(message) else {
         eprintln!("P2P 메시지 직렬화 실패");
         return;
@@ -252,39 +254,42 @@ fn publish(swarm: &mut libp2p::Swarm<AahBehaviour>, topic: &str, message: &WireM
 }
 
 async fn handle_swarm_event(
-    swarm: &mut libp2p::Swarm<AahBehaviour>,
-    event: SwarmEvent<AahBehaviourEvent>,
+    swarm: &mut libp2p::Swarm<IeumBehaviour>,
+    event: SwarmEvent<IeumBehaviourEvent>,
     event_tx: &mpsc::Sender<NetworkEvent>,
     guard: &mut PeerGuard,
     max_message_bytes: usize,
 ) -> Result<(), String> {
     match event {
-        SwarmEvent::Behaviour(AahBehaviourEvent::Mdns(mdns::Event::Discovered(peers))) => {
+        SwarmEvent::Behaviour(IeumBehaviourEvent::Mdns(mdns::Event::Discovered(peers))) => {
             for (peer, address) in peers {
                 swarm.behaviour_mut().gossipsub.add_explicit_peer(&peer);
                 swarm.behaviour_mut().kademlia.add_address(&peer, address);
                 let _ = event_tx.send(NetworkEvent::PeerDiscovered(peer)).await;
             }
         }
-        SwarmEvent::Behaviour(AahBehaviourEvent::Mdns(mdns::Event::Expired(peers))) => {
+        SwarmEvent::Behaviour(IeumBehaviourEvent::Mdns(mdns::Event::Expired(peers))) => {
             for (peer, _) in peers {
                 swarm.behaviour_mut().gossipsub.remove_explicit_peer(&peer);
             }
         }
-        SwarmEvent::Behaviour(AahBehaviourEvent::Identify(
-            identify::Event::Received { peer_id, info, .. },
-        )) => {
+        SwarmEvent::Behaviour(IeumBehaviourEvent::Identify(identify::Event::Received {
+            peer_id,
+            info,
+            ..
+        })) => {
             for address in info.listen_addrs {
-                swarm.behaviour_mut().kademlia.add_address(&peer_id, address);
+                swarm
+                    .behaviour_mut()
+                    .kademlia
+                    .add_address(&peer_id, address);
             }
         }
-        SwarmEvent::Behaviour(AahBehaviourEvent::Gossipsub(
-            gossipsub::Event::Message {
-                propagation_source,
-                message,
-                ..
-            },
-        )) => {
+        SwarmEvent::Behaviour(IeumBehaviourEvent::Gossipsub(gossipsub::Event::Message {
+            propagation_source,
+            message,
+            ..
+        })) => {
             let peer_key = propagation_source.to_string();
             if guard.check(&peer_key) == PeerDecision::TemporarilyBlocked {
                 return Ok(());
@@ -314,7 +319,10 @@ async fn handle_swarm_event(
                     message,
                 },
             };
-            event_tx.send(network_event).await.map_err(|e| e.to_string())?;
+            event_tx
+                .send(network_event)
+                .await
+                .map_err(|e| e.to_string())?;
         }
         SwarmEvent::ConnectionEstablished { peer_id, .. } => {
             let _ = event_tx.send(NetworkEvent::PeerConnected(peer_id)).await;
@@ -326,8 +334,8 @@ async fn handle_swarm_event(
             println!("QUIC P2P 대기: {address}/p2p/{}", swarm.local_peer_id());
         }
         // Kademlia 이벤트는 라우팅 테이블 내부에서 처리되며 여기서는 로그를 생략합니다.
-        SwarmEvent::Behaviour(AahBehaviourEvent::Kademlia(_))
-        | SwarmEvent::Behaviour(AahBehaviourEvent::Identify(_)) => {}
+        SwarmEvent::Behaviour(IeumBehaviourEvent::Kademlia(_))
+        | SwarmEvent::Behaviour(IeumBehaviourEvent::Identify(_)) => {}
         _ => {}
     }
     Ok(())

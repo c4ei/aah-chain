@@ -169,7 +169,7 @@ fn dispatch(
     params: &[Value],
 ) -> Result<Value, (i64, String)> {
     match method {
-        "web3_clientVersion" => Ok(json!("AAH-Chain/v0.0.5-2/explorer-compat/rust")),
+        "web3_clientVersion" => Ok(json!("IEUM-Chain/v0.0.5-2/explorer-compat/rust")),
         "net_version" => {
             let state = read_state(state)?;
             Ok(json!(state.chain_id.to_string()))
@@ -218,7 +218,7 @@ fn dispatch(
             state.wallets.insert(address.clone(), wallet);
             Ok(json!(address))
         }
-        "aah_newMnemonic" => {
+        "ieum_newMnemonic" => {
             let words = AccountWallet::generate_mnemonic().map_err(|message| (-32603, message))?;
             let wallet =
                 AccountWallet::from_mnemonic(&words, 0).map_err(|message| (-32603, message))?;
@@ -227,7 +227,7 @@ fn dispatch(
             state.wallets.insert(address.clone(), wallet);
             Ok(json!({"mnemonic": words, "address": address, "path": "m/44'/60'/0'/0/0"}))
         }
-        "aah_importMnemonic" => {
+        "ieum_importMnemonic" => {
             let words = string_param(params, 0)?;
             let index = params.get(1).and_then(Value::as_u64).unwrap_or(0);
             let index = u32::try_from(index)
@@ -315,7 +315,7 @@ fn dispatch(
                 })
                 .unwrap_or(Value::Null))
         }
-        "aah_getStorageStatus" => {
+        "ieum_getStorageStatus" => {
             let state = read_state(state)?;
             serde_json::to_value(
                 state
@@ -613,7 +613,7 @@ mod tests {
     fn standard_mnemonic_import_returns_metamask_address() {
         let shared = RpcServer::new(RpcConfig::default()).state;
         let words = "test test test test test test test test test test test junk";
-        let address = dispatch(&shared, "aah_importMnemonic", &[json!(words), json!(0)]).unwrap();
+        let address = dispatch(&shared, "ieum_importMnemonic", &[json!(words), json!(0)]).unwrap();
         assert_eq!(address, json!("0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266"));
     }
 }
