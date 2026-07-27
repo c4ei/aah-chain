@@ -1,35 +1,21 @@
-pub mod account;
-pub mod archive;
 pub mod chain;
-pub mod checkpoint;
 pub mod consensus;
-pub mod consensus_runtime;
 pub mod consensus_wal;
-pub mod genesis;
-pub mod governance;
+pub mod checkpoint;
 pub mod mempool;
 pub mod model;
 pub mod network;
-pub mod node_key;
 pub mod peer_guard;
-pub mod raw_transaction;
-pub mod rpc;
 pub mod storage;
 pub mod wallet;
 
-pub use account::AccountWallet;
-pub use archive::{ArchiveStatus, ArchiveStore, StateSnapshot};
 pub use chain::Blockchain;
 pub use checkpoint::Checkpoint;
 pub use consensus::{BftConsensus, ConsensusMessage, ConsensusPhase, Validator};
 pub use consensus_wal::ConsensusWal;
-pub use genesis::GenesisConfig;
-pub use governance::{Governance, ParticipationPolicy, RewardSplit};
 pub use mempool::Mempool;
 pub use network::{NetworkCommand, NetworkConfig, P2pNode};
-pub use node_key::load_or_create_node_key;
 pub use peer_guard::{PeerDecision, PeerGuard};
-pub use rpc::{RpcConfig, RpcServer};
 pub use wallet::Wallet;
 
 #[cfg(test)]
@@ -43,11 +29,8 @@ mod tests {
         let producer = Wallet::from_seed([3; 32]);
         let mut chain = Blockchain::new(vec![(alice.address(), 1_000)]);
         let mut pool = Mempool::default();
-        pool.add(alice.sign_transfer(bob.address(), 250, 3, 0))
-            .unwrap();
-        chain
-            .add_block(pool.drain(100), producer.address())
-            .unwrap();
+        pool.add(alice.sign_transfer(bob.address(), 250, 3, 0)).unwrap();
+        chain.add_block(pool.drain(100), producer.address()).unwrap();
 
         assert_eq!(chain.balance_of(&alice.address()), 747);
         assert_eq!(chain.balance_of(&bob.address()), 250);
@@ -73,10 +56,7 @@ mod tests {
         let initial = vec![(alice.address(), 1_000)];
         let mut sender = Blockchain::new(initial.clone());
         let tx = alice.sign_transfer(bob.address(), 100, 1, 0);
-        let block = sender
-            .add_block(vec![tx], validator.address())
-            .unwrap()
-            .clone();
+        let block = sender.add_block(vec![tx], validator.address()).unwrap().clone();
 
         let mut receiver = Blockchain::new(initial);
         receiver.apply_block(block.clone()).unwrap();
@@ -97,12 +77,22 @@ mod tests {
         bft.propose(&proposer, "block-hash").unwrap();
 
         for key in keys.iter().take(3) {
-            bft.handle(ConsensusMessage::prevote(5, 0, key, "block-hash"))
-                .unwrap();
+            bft.handle(ConsensusMessage::prevote(
+                5,
+                0,
+                key,
+                "block-hash",
+            ))
+            .unwrap();
         }
         for key in keys.iter().take(3) {
-            bft.handle(ConsensusMessage::precommit(5, 0, key, "block-hash"))
-                .unwrap();
+            bft.handle(ConsensusMessage::precommit(
+                5,
+                0,
+                key,
+                "block-hash",
+            ))
+            .unwrap();
         }
 
         assert_eq!(bft.finalized_hash(), Some("block-hash"));

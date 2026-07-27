@@ -1,7 +1,6 @@
-use crate::model::Block;
-use crate::wallet::{Wallet, verify_signature};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
+use crate::wallet::{verify_signature, Wallet};
 
 /// 검증자와 투표권입니다. 현재 예제에서는 stake를 투표 가중치로 사용합니다.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -34,54 +33,6 @@ pub enum VoteType {
     Precommit,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-pub struct SignedProposal {
-    pub height: u64,
-    pub round: u32,
-    pub proposer_id: String,
-    pub block: Block,
-    pub signature: String,
-}
-
-impl SignedProposal {
-    pub fn new(height: u64, round: u32, proposer: &Wallet, block: Block) -> Self {
-        let proposer_id = proposer.address();
-        let signature = proposer.sign_bytes(&Self::unsigned_bytes(
-            height,
-            round,
-            &proposer_id,
-            &block.hash,
-        ));
-        Self {
-            height,
-            round,
-            proposer_id,
-            block,
-            signature,
-        }
-    }
-
-    fn unsigned_bytes(height: u64, round: u32, proposer_id: &str, block_hash: &str) -> Vec<u8> {
-        let mut bytes = b"AAH-PROPOSAL-V1".to_vec();
-        bytes.extend_from_slice(&height.to_be_bytes());
-        bytes.extend_from_slice(&round.to_be_bytes());
-        push_text(&mut bytes, proposer_id);
-        push_text(&mut bytes, block_hash);
-        bytes
-    }
-
-    pub fn verify(&self) -> Result<(), String> {
-        if self.block.height != self.height || self.block.hash != self.block.calculate_hash() {
-            return Err("제안 블록의 높이 또는 해시가 올바르지 않습니다.".into());
-        }
-        verify_signature(
-            &self.proposer_id,
-            &Self::unsigned_bytes(self.height, self.round, &self.proposer_id, &self.block.hash),
-            &self.signature,
-        )
-    }
-}
-
 /// 네트워크로 전달되는 BFT 합의 메시지입니다.
 /// 운영 버전에서는 validator_id가 아니라 검증자 키의 서명을 반드시 검증해야 합니다.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -104,7 +55,7 @@ impl ConsensusMessage {
         block_hash: &str,
     ) -> Vec<u8> {
         // 체인 간 재사용 공격을 막기 위한 도메인 구분 문자열입니다.
-        let mut bytes = b"AAH-CONSENSUS-V1".to_vec();
+        let mut bytes = b"IEUM-CONSENSUS-V1".to_vec();
         bytes.extend_from_slice(&height.to_be_bytes());
         bytes.extend_from_slice(&round.to_be_bytes());
         bytes.push(match vote_type {
@@ -123,13 +74,7 @@ impl ConsensusMessage {
         validator: &Wallet,
         block_hash: impl Into<String>,
     ) -> Self {
-        Self::signed(
-            height,
-            round,
-            validator,
-            VoteType::Prevote,
-            block_hash.into(),
-        )
+        Self::signed(height, round, validator, VoteType::Prevote, block_hash.into())
     }
 
     /// 검증자 개인키로 서명된 precommit을 생성합니다.
@@ -139,13 +84,7 @@ impl ConsensusMessage {
         validator: &Wallet,
         block_hash: impl Into<String>,
     ) -> Self {
-        Self::signed(
-            height,
-            round,
-            validator,
-            VoteType::Precommit,
-            block_hash.into(),
-        )
+        Self::signed(height, round, validator, VoteType::Precommit, block_hash.into())
     }
 
     fn signed(
@@ -264,10 +203,7 @@ impl BftConsensus {
             return Err("현재 단계에서는 블록을 제안할 수 없습니다.".into());
         }
         if proposer != self.expected_proposer() {
-            return Err(format!(
-                "이번 라운드의 제안자는 {}입니다.",
-                self.expected_proposer()
-            ));
+            return Err(format!("이번 라운드의 제안자는 {}입니다.", self.expected_proposer()));
         }
         if block_hash.is_empty() {
             return Err("빈 블록 해시는 제안할 수 없습니다.".into());
@@ -275,31 +211,6 @@ impl BftConsensus {
         self.proposal = Some(block_hash.to_string());
         self.phase = ConsensusPhase::Prevote;
         Ok(())
-    }
-
-    pub fn handle_proposal(&mut self, proposal: &SignedProposal) -> Result<(), String> {
-        if proposal.height != self.height || proposal.round != self.round {
-            return Err("현재 높이/라운드와 다른 제안입니다.".into());
-        }
-        proposal.verify()?;
-        self.propose(&proposal.proposer_id, &proposal.block.hash)
-    }
-
-    /// 제안 또는 투표 timeout 시 다음 라운드로 이동합니다.
-    pub fn on_timeout(&mut self) -> Result<u32, String> {
-        if self.phase == ConsensusPhase::Finalized {
-            return Err("이미 확정된 높이는 라운드를 변경할 수 없습니다.".into());
-        }
-        let next = self
-            .round
-            .checked_add(1)
-            .ok_or("라운드가 범위를 넘었습니다.")?;
-        self.start_round(self.height, next)?;
-        Ok(next)
-    }
-
-    pub fn round(&self) -> u32 {
-        self.round
     }
 
     pub fn handle(&mut self, message: ConsensusMessage) -> Result<(), String> {
@@ -312,7 +223,6 @@ impl BftConsensus {
         message.verify()?;
         match (self.phase, message.vote_type) {
             (ConsensusPhase::Prevote, VoteType::Prevote)
-            | (ConsensusPhase::Precommit, VoteType::Prevote)
             | (ConsensusPhase::Precommit, VoteType::Precommit) => {}
             _ => return Err("현재 합의 단계와 투표 종류가 일치하지 않습니다.".into()),
         }
@@ -336,10 +246,7 @@ impl BftConsensus {
         }
 
         let key = (message.vote_type, message.block_hash.clone());
-        self.votes
-            .entry(key.clone())
-            .or_default()
-            .insert(message.validator_id);
+        self.votes.entry(key.clone()).or_default().insert(message.validator_id);
         if self.has_quorum(&key) {
             match message.vote_type {
                 VoteType::Prevote => self.phase = ConsensusPhase::Precommit,

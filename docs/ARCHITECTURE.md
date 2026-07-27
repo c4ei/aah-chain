@@ -1,4 +1,4 @@
-# AAH Chain 목표 구조
+# IEUM Chain 목표 구조
 
 ## 설계 원칙
 

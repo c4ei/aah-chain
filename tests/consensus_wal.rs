@@ -1,11 +1,11 @@
-use aah_chain::{ConsensusMessage, ConsensusWal, Wallet};
+use ieum_chain::{ConsensusMessage, ConsensusWal, Wallet};
 use std::fs;
 
 #[test]
 fn wal_recovers_vote_and_blocks_double_sign() {
     let validator = Wallet::from_seed([7; 32]);
     let path = std::env::temp_dir().join(format!(
-        "aah-consensus-wal-{}-{}.jsonl",
+        "ieum-consensus-wal-{}-{}.jsonl",
         std::process::id(),
         validator.address()
     ));

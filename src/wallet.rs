@@ -2,7 +2,7 @@ use crate::model::{Address, Transaction};
 use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
 use rand_core::OsRng;
 
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub struct Wallet {
     signing_key: SigningKey,
 }
@@ -34,7 +34,13 @@ impl Wallet {
         hex::encode(self.signing_key.sign(message).to_bytes())
     }
 
-    pub fn sign_transfer(&self, to: Address, amount: u128, fee: u128, nonce: u64) -> Transaction {
+    pub fn sign_transfer(
+        &self,
+        to: Address,
+        amount: u64,
+        fee: u64,
+        nonce: u64,
+    ) -> Transaction {
         let mut tx = Transaction {
             from: self.address(),
             to,
@@ -55,20 +61,6 @@ impl Default for Wallet {
 }
 
 pub fn verify_transaction(tx: &Transaction) -> Result<(), String> {
-    verify_transaction_for_chain(tx, 21004)
-}
-
-pub fn verify_transaction_for_chain(tx: &Transaction, chain_id: u64) -> Result<(), String> {
-    if tx.signature.starts_with("ethraw:") {
-        return crate::raw_transaction::verify_embedded(tx, chain_id);
-    }
-    if tx.from.starts_with("0x") && tx.from.len() == 42 {
-        return crate::account::verify_account_signature(
-            &tx.from,
-            &tx.signing_bytes(),
-            &tx.signature,
-        );
-    }
     verify_signature(&tx.from, &tx.signing_bytes(), &tx.signature)
 }
 

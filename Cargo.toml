@@ -1,17 +1,13 @@
 [package]
-name = "aah-chain"
-version = "0.0.6-1"
+name = "ieum-chain"
+version = "0.6.2"
 edition = "2024"
 
 [dependencies]
-axum = "0.8"
-bip32 = { version = "0.5", features = ["secp256k1"] }
-bip39 = { version = "2", features = ["rand"] }
 clap = { version = "4.5", features = ["derive"] }
 ed25519-dalek = { version = "2.2", features = ["rand_core"] }
 futures = "0.3"
 hex = "0.4"
-k256 = { version = "0.13", features = ["ecdsa"] }
 libp2p = { version = "0.56", features = [
     "tokio",
     "quic",
@@ -28,5 +24,4 @@ rand_core = { version = "0.6", features = ["getrandom"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
-sha3 = "0.10"
 tokio = { version = "1.47", features = ["full"] }

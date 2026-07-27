@@ -1,16 +1,21 @@
-# aah-chain
+# IEUM Chain
 
-AAH Chain을 배우며 확장하는 Rust 기반 경량 블록체인 테스트넷입니다.
-현재 배포 버전은 `0.0.5-2`이며, 월별 상태 체크포인트·활성 블록 100MB 상한과
-Block Explorer용 HTTP JSON-RPC 조회 계층을 추가했습니다.
+> 사람과 사람, 체인과 체인, 가치와 생활을 잇는 가벼운 블록체인
+
+- 네트워크 이름: `IEUM`
+- 네이티브 코인 심볼: `IEUM`
+- EVM 호환 Chain ID: `21004`
+- 프로젝트/실행 파일: `ieum-chain`
+- 기존 `AAH` geth 네트워크(Chain ID `21133`)와는 별개의 체인입니다.
+
+IEUM Chain을 배우며 확장하는 Rust 기반 경량 블록체인 테스트넷입니다.
+현재 버전은 `0.6.1`이며, 기존 Step 1~5 기능에 서명된 BFT 투표와 합의 WAL 코어를 추가했습니다.
 
 > 주의: 학습·사설 테스트넷용 코드입니다. 실제 자산을 맡기는 메인넷에 사용하지 마세요.
 
 ## 현재 구현
 
-- 사용자 계정: geth 호환 secp256k1 키와 Ethereum 20바이트 주소
-- seed 지갑: BIP-39 및 `m/44'/60'/0'/0/n` HD 파생
-- 합의 검증자·P2P: 역할을 분리한 기존 Ed25519 키
+- Ed25519 지갑, 주소, 서명 거래
 - 잔액, nonce, 수수료, mempool
 - 블록 생성·검증, JSON 저장·복구, 체크포인트
 - 거래가 없을 때 빈 블록 생략
@@ -21,23 +26,13 @@ Block Explorer용 HTTP JSON-RPC 조회 계층을 추가했습니다.
 - stake 가중치 2/3 초과 prevote/precommit BFT 상태기계
 - 합의 투표 Ed25519 서명 검증
 - 합의 WAL 저장·복구와 로컬 이중서명 방지
-- 영구 node key, 고정 PeerId와 bootstrap JSON
-- 서명 proposal, timeout/round change, 확정 후 저장과 신규 노드 블록 동기화 코어
 - 주요 소스의 한국어 학습 주석
 - 필요할 때만 접속하는 모바일·웹 클라이언트 구조 문서
-- geth 호환 JSON-RPC: 계정 생성·개인키/seed 가져오기, 잔액, nonce, 관리형 계정 송금
-- 월별 상태 체크포인트와 활성/백업 블록 분리(활성 전체 합계 최대 100MB)
-- Explorer용 블록·거래·영수증 조회 RPC
 
 상세 진행표는 [docs/ROADMAP.md](docs/ROADMAP.md)를 참고하세요.
 전체 목표 구조는 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)에 정리했습니다.
 간헐 접속 클라이언트 설계는 [docs/CLIENT.md](docs/CLIENT.md)를 참고하세요.
 버전별 변경 내용은 [CHANGELOG.md](CHANGELOG.md)에 기록합니다.
-geth 호환 범위와 예제는 [docs/GETH_COMPAT.md](docs/GETH_COMPAT.md)를 참고하세요.
-4노드 BFT 범위는 [docs/BFT_4NODE.md](docs/BFT_4NODE.md), 제네시스 AAH와
-이전 방법은 [docs/GENESIS_AAH_TRANSFER.md](docs/GENESIS_AAH_TRANSFER.md)를 참고하세요.
-저장 정책은 [docs/ACTIVE_BACKUP_STORAGE.md](docs/ACTIVE_BACKUP_STORAGE.md), Explorer
-연동은 [docs/BLOCK_EXPLORER.md](docs/BLOCK_EXPLORER.md)를 참고하세요.
 
 ## Ubuntu 설치
 
@@ -60,16 +55,6 @@ cargo test
 cargo run -- --port 7001
 ```
 
-실행 후 P2P는 UDP `7001`, geth 호환 HTTP JSON-RPC는 로컬 TCP `8545`에서
-대기합니다. 외부 공개가 꼭 필요한 경우가 아니면 `--rpc-addr 127.0.0.1`을
-유지하세요.
-
-```bash
-curl -s http://127.0.0.1:8545 \
-  -H 'content-type: application/json' \
-  --data '{"jsonrpc":"2.0","id":1,"method":"eth_accounts","params":[]}'
-```
-
 같은 공유기 안에서 두 번째 터미널:
 
 ```bash
@@ -89,24 +74,21 @@ cargo run -- --port 7002 \
 ## 표준화한 폴더 구조
 
 ```text
-aah-chain/
+ieum-chain/
 ├── .vscode/              VS Code 공통 설정
 ├── config/               노드·검증자 설정 예제
 ├── docs/                 설계, 진행상태, 운영·보안 문서
 ├── src/
 │   ├── chain.rs          블록체인 상태와 검증
-│   ├── archive.rs        월별 체크포인트와 활성/백업 블록
 │   ├── consensus.rs      PoS 가중 BFT 상태기계
 │   ├── consensus_wal.rs  합의 투표 기록·복구와 이중서명 방지
 │   ├── network.rs        QUIC/libp2p와 피어 검색
 │   ├── peer_guard.rs     악성 피어 점수·차단
-│   ├── rpc.rs            geth 호환 HTTP JSON-RPC 어댑터
-│   ├── account.rs        secp256k1, Ethereum 주소, BIP-39/44 사용자 계정
 │   ├── mempool.rs        거래 대기소
 │   ├── model.rs          거래·블록 모델
 │   ├── storage.rs        로컬 저장·복구
 │   ├── checkpoint.rs     빈 구간 체크포인트
-│   ├── wallet.rs         Ed25519 합의·기존 테스트 지갑
+│   ├── wallet.rs         키·주소·서명
 │   ├── lib.rs            재사용 가능한 코어 공개
 │   └── main.rs           노드 실행 파일
 ├── tests/                통합 테스트(다음 단계에서 확대)
@@ -115,6 +97,6 @@ aah-chain/
 └── README.md
 ```
 
-프로젝트가 커지면 `crates/aah-network`, `crates/aah-consensus`,
-`crates/aah-ledger`, `apps/aah-node`의 Cargo workspace로 분리합니다.
+프로젝트가 커지면 `crates/ieum-network`, `crates/ieum-consensus`,
+`crates/ieum-ledger`, `apps/ieum-node`의 Cargo workspace로 분리합니다.
 지금은 배우기 쉽도록 한 crate 안에서 모듈만 나눴습니다.
