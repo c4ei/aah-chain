@@ -1,8 +1,7 @@
-use ieum_chain::Blockchain;
 use ieum_chain::consensus::{ConsensusPhase, Validator};
-use ieum_chain::consensus_runtime::ConsensusRuntime;
 use ieum_chain::model::Block;
 use ieum_chain::wallet::Wallet;
+use ieum_chain::{Blockchain, ConsensusRuntime};
 use std::time::Duration;
 
 fn setup() -> (Vec<ConsensusRuntime>, Vec<Wallet>) {
@@ -11,14 +10,14 @@ fn setup() -> (Vec<ConsensusRuntime>, Vec<Wallet>) {
         .iter()
         .map(|w| Validator::new(w.address(), 100))
         .collect::<Vec<_>>();
-    let nodes = wallets
-        .iter()
-        .cloned()
-        .map(|wallet| {
+    // Wallet은 개인키를 보유하므로 실수로 복제되지 않게 Clone을 구현하지 않습니다.
+    // 테스트 노드용 지갑은 동일한 테스트 seed에서 별도로 재생성합니다.
+    let nodes = (1_u8..=4)
+        .map(|n| {
             ConsensusRuntime::new(
                 Blockchain::new(vec![]),
                 validators.clone(),
-                wallet,
+                Wallet::from_seed([n; 32]),
                 Duration::from_millis(50),
             )
             .unwrap()

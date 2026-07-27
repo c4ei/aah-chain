@@ -21,7 +21,7 @@ struct Args {
     max_message_bytes: usize,
 
     /// 지갑/geth 호환 JSON-RPC TCP 포트
-    #[arg(long, default_value_t = 8545)]
+    #[arg(long, default_value_t = 8989)]
     rpc_port: u16,
 
     /// JSON-RPC 리스닝 IP. 기본값은 외부에 노출되지 않는 localhost입니다.

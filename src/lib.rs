@@ -2,6 +2,7 @@ pub mod account;
 pub mod archive;
 pub mod chain;
 pub mod consensus;
+pub mod consensus_runtime;
 pub mod consensus_wal;
 pub mod checkpoint;
 pub mod genesis;
@@ -17,7 +18,10 @@ pub mod wallet;
 pub use archive::ArchiveStore;
 pub use chain::Blockchain;
 pub use checkpoint::Checkpoint;
-pub use consensus::{BftConsensus, ConsensusMessage, ConsensusPhase, Validator};
+pub use consensus::{
+    BftConsensus, ConsensusMessage, ConsensusPhase, SignedProposal, Validator,
+};
+pub use consensus_runtime::ConsensusRuntime;
 pub use consensus_wal::ConsensusWal;
 pub use genesis::GenesisConfig;
 pub use mempool::Mempool;

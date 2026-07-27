@@ -25,7 +25,7 @@ RPC 모듈은 `u128` 금액과 체크포인트·블록 조회 기능을 요구�
 ```bash
 cargo clean
 cargo test
-cargo run -- --port 7001 --rpc-port 8545
+cargo run -- --port 7001 --rpc-port 8989
 ```
 
 RPC 확인:

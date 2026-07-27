@@ -92,7 +92,11 @@ impl ConsensusRuntime {
             )));
         }
         if self.consensus.phase() == ConsensusPhase::Finalized {
-            let block = self.pending.take().ok_or("확정할 후보 블록이 없습니다.")?;
+            // 네트워크에서 같은 precommit이 다시 도착해도 이미 적용한 블록을
+            // 중복 저장하거나 정상 노드를 오류 상태로 만들지 않습니다.
+            let Some(block) = self.pending.take() else {
+                return Ok(None);
+            };
             if self.consensus.finalized_hash() != Some(block.hash.as_str()) {
                 return Err("확정 해시와 후보 블록 해시가 다릅니다.".into());
             }
