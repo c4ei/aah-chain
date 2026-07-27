@@ -333,9 +333,10 @@ async fn handle_swarm_event(
         SwarmEvent::NewListenAddr { address, .. } => {
             println!("QUIC P2P 대기: {address}/p2p/{}", swarm.local_peer_id());
         }
-        // Kademlia 이벤트는 라우팅 테이블 내부에서 처리되며 여기서는 로그를 생략합니다.
-        SwarmEvent::Behaviour(IeumBehaviourEvent::Kademlia(_))
-        | SwarmEvent::Behaviour(IeumBehaviourEvent::Identify(_)) => {}
+        // Kademlia 이벤트는 Behaviour 내부에서 이미 상태에 반영됩니다.
+        // 값을 명시적으로 소비해 이벤트 필드가 사용되지 않는다는 경고를 피합니다.
+        SwarmEvent::Behaviour(IeumBehaviourEvent::Kademlia(_event)) => {}
+        SwarmEvent::Behaviour(IeumBehaviourEvent::Identify(_)) => {}
         _ => {}
     }
     Ok(())
