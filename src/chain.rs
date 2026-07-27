@@ -7,18 +7,26 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Blockchain {
+    pub chain_id: u64,
+    pub genesis_commitment: String,
     /// 확정된 블록만 저장합니다. 합의 중인 후보 블록은 여기에 넣으면 안 됩니다.
     pub blocks: Vec<Block>,
-    pub initial_balances: HashMap<Address, u64>,
-    balances: HashMap<Address, u64>,
+    pub initial_balances: HashMap<Address, u128>,
+    balances: HashMap<Address, u128>,
     next_nonces: HashMap<Address, u64>,
 }
 
 impl Blockchain {
     /// 제네시스 잔액과 0번 블록으로 새 체인을 시작합니다.
-    pub fn new(initial_balances: Vec<(Address, u64)>) -> Self {
+    pub fn new(initial_balances: Vec<(Address, u128)>) -> Self {
+        Self::with_chain_id(21_004, initial_balances)
+    }
+
+    pub fn with_chain_id(chain_id: u64, initial_balances: Vec<(Address, u128)>) -> Self {
         let initial_balances: HashMap<_, _> = initial_balances.into_iter().collect();
         Self {
+            chain_id,
+            genesis_commitment: Block::genesis().hash,
             blocks: vec![Block::genesis()],
             balances: initial_balances.clone(),
             initial_balances,
@@ -26,8 +34,89 @@ impl Blockchain {
         }
     }
 
-    pub fn balance_of(&self, address: &str) -> u64 {
+    pub fn from_genesis(genesis: &crate::genesis::GenesisConfig) -> Result<Self, String> {
+        genesis.validate()?;
+        let balances = genesis
+            .initial_balances
+            .iter()
+            .map(|(address, balance)| (normalize_address(address), *balance))
+            .collect();
+        let mut chain = Self::with_chain_id(genesis.chain_id, balances);
+        chain.genesis_commitment = genesis.genesis_hash()?;
+        Ok(chain)
+    }
+
+    pub fn from_snapshot(
+        chain_id: u64,
+        genesis_commitment: String,
+        height: u64,
+        block_hash: String,
+        balances: HashMap<Address, u128>,
+        next_nonces: HashMap<Address, u64>,
+    ) -> Result<Self, String> {
+        if block_hash.trim_start_matches("0x").len() != 64 {
+            return Err("체크포인트 블록 해시는 32바이트 hex여야 합니다.".into());
+        }
+        let anchor = Block {
+            height,
+            previous_hash: String::new(),
+            timestamp: 0,
+            producer: "checkpoint".into(),
+            transactions: vec![],
+            hash: block_hash.trim_start_matches("0x").to_string(),
+        };
+        Ok(Self {
+            chain_id,
+            genesis_commitment,
+            blocks: vec![anchor],
+            initial_balances: balances.clone(),
+            balances,
+            next_nonces,
+        })
+    }
+
+    pub fn balance_of(&self, address: &str) -> u128 {
         self.balances.get(address).copied().unwrap_or(0)
+    }
+
+    pub fn tip_height(&self) -> u64 {
+        self.blocks.last().map(|block| block.height).unwrap_or(0)
+    }
+
+    pub fn tip_hash(&self) -> &str {
+        self.blocks
+            .last()
+            .map(|block| block.hash.as_str())
+            .unwrap_or("")
+    }
+
+    pub fn balances_snapshot(&self) -> HashMap<Address, u128> {
+        self.balances.clone()
+    }
+
+    pub fn nonces_snapshot(&self) -> HashMap<Address, u64> {
+        self.next_nonces.clone()
+    }
+
+    pub fn block_by_height(&self, height: u64) -> Option<&Block> {
+        self.blocks.iter().find(|block| block.height == height)
+    }
+
+    pub fn block_by_hash(&self, hash: &str) -> Option<&Block> {
+        let hash = hash.trim_start_matches("0x");
+        self.blocks.iter().find(|block| block.hash == hash)
+    }
+
+    pub fn transaction_by_hash(&self, hash: &str) -> Option<(&Block, usize, &Transaction)> {
+        let hash = hash.trim_start_matches("0x");
+        self.blocks.iter().find_map(|block| {
+            block
+                .transactions
+                .iter()
+                .enumerate()
+                .find(|(_, transaction)| transaction.id() == hash)
+                .map(|(index, transaction)| (block, index, transaction))
+        })
     }
 
     pub fn next_nonce(&self, address: &str) -> u64 {
@@ -68,6 +157,7 @@ impl Blockchain {
         let mut balances = self.balances.clone();
         let mut nonces = self.next_nonces.clone();
         apply_transactions(
+            self.chain_id,
             &block.transactions,
             &block.producer,
             &mut balances,
@@ -96,6 +186,7 @@ impl Blockchain {
                     return Err(format!("{index}번 블록 연결이 끊어졌습니다."));
                 }
                 apply_transactions(
+                    self.chain_id,
                     &block.transactions,
                     &block.producer,
                     &mut balances,
@@ -123,15 +214,20 @@ impl Blockchain {
 }
 
 fn apply_transactions(
+    chain_id: u64,
     transactions: &[Transaction],
     producer: &str,
-    balances: &mut HashMap<Address, u64>,
+    balances: &mut HashMap<Address, u128>,
     nonces: &mut HashMap<Address, u64>,
 ) -> Result<(), String> {
     // 블록 하나를 원자적으로 처리하기 위해 복제된 상태에 먼저 적용합니다.
     // 하나라도 실패하면 호출자가 원래 balances/nonces를 그대로 유지합니다.
     for tx in transactions {
-        verify_transaction(tx)?;
+        if tx.signature.starts_with("ethraw:") {
+            crate::raw_transaction::verify_embedded(tx, chain_id)?;
+        } else {
+            verify_transaction(tx)?;
+        }
         if tx.amount == 0 {
             return Err("송금액은 0보다 커야 합니다.".into());
         }
@@ -148,11 +244,31 @@ fn apply_transactions(
             return Err("수수료를 포함한 잔액이 부족합니다.".into());
         }
         balances.insert(tx.from.clone(), sender - total);
-        *balances.entry(tx.to.clone()).or_default() += tx.amount;
-        *balances.entry(producer.to_string()).or_default() += tx.fee;
+        let receiver = balances.get(&tx.to).copied().unwrap_or(0);
+        balances.insert(
+            tx.to.clone(),
+            receiver
+                .checked_add(tx.amount)
+                .ok_or("받는 계정 잔액이 u128 범위를 넘습니다.")?,
+        );
+        let reward = balances.get(producer).copied().unwrap_or(0);
+        balances.insert(
+            producer.to_string(),
+            reward
+                .checked_add(tx.fee)
+                .ok_or("블록 생성자 보상 잔액이 u128 범위를 넘습니다.")?,
+        );
         nonces.insert(tx.from.clone(), expected_nonce + 1);
     }
     Ok(())
+}
+
+fn normalize_address(address: &str) -> String {
+    if address.starts_with("0x") {
+        format!("0x{}", address.trim_start_matches("0x").to_ascii_lowercase())
+    } else {
+        address.to_string()
+    }
 }
 
 fn now() -> u64 {

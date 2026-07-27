@@ -1,21 +1,29 @@
+pub mod account;
+pub mod archive;
 pub mod chain;
 pub mod consensus;
 pub mod consensus_wal;
 pub mod checkpoint;
+pub mod genesis;
 pub mod mempool;
 pub mod model;
 pub mod network;
 pub mod peer_guard;
+pub mod raw_transaction;
+pub mod rpc;
 pub mod storage;
 pub mod wallet;
 
+pub use archive::ArchiveStore;
 pub use chain::Blockchain;
 pub use checkpoint::Checkpoint;
 pub use consensus::{BftConsensus, ConsensusMessage, ConsensusPhase, Validator};
 pub use consensus_wal::ConsensusWal;
+pub use genesis::GenesisConfig;
 pub use mempool::Mempool;
 pub use network::{NetworkCommand, NetworkConfig, P2pNode};
 pub use peer_guard::{PeerDecision, PeerGuard};
+pub use rpc::{RpcConfig, RpcServer};
 pub use wallet::Wallet;
 
 #[cfg(test)]

@@ -169,7 +169,7 @@ fn dispatch(
     params: &[Value],
 ) -> Result<Value, (i64, String)> {
     match method {
-        "web3_clientVersion" => Ok(json!("IEUM-Chain/v0.0.5-2/explorer-compat/rust")),
+        "web3_clientVersion" => Ok(json!("IEUM-Chain/v0.6.3/rpc/rust")),
         "net_version" => {
             let state = read_state(state)?;
             Ok(json!(state.chain_id.to_string()))
@@ -358,9 +358,10 @@ fn send_raw_transaction(
         .last()
         .cloned()
         .expect("방금 생성한 블록");
+    let chain_after = state.chain.clone();
     state
         .archive
-        .append_finalized(&block, &chain_before, &state.chain)
+        .append_finalized(&block, &chain_before, &chain_after)
         .map_err(|message| (-32000, message))?;
     Ok(json!(transaction_hash))
 }
@@ -437,9 +438,10 @@ fn send_transaction(
         .last()
         .cloned()
         .expect("방금 생성한 블록");
+    let chain_after = state.chain.clone();
     state
         .archive
-        .append_finalized(&block, &chain_before, &state.chain)
+        .append_finalized(&block, &chain_before, &chain_after)
         .map_err(|message| (-32000, message))?;
     Ok(json!(transaction_id))
 }

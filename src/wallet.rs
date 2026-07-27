@@ -37,8 +37,8 @@ impl Wallet {
     pub fn sign_transfer(
         &self,
         to: Address,
-        amount: u64,
-        fee: u64,
+        amount: u128,
+        fee: u128,
         nonce: u64,
     ) -> Transaction {
         let mut tx = Transaction {
@@ -61,6 +61,18 @@ impl Default for Wallet {
 }
 
 pub fn verify_transaction(tx: &Transaction) -> Result<(), String> {
+    if tx.signature.starts_with("ethraw:") {
+        // raw 거래는 decode_legacy에서 EIP-155 서명과 chain_id를 검증합니다.
+        // 원장 적용 시에는 현재 네트워크 ID로 다시 검증해야 하므로 chain.rs에서 처리합니다.
+        return Ok(());
+    }
+    if tx.from.starts_with("0x") {
+        return crate::account::verify_account_signature(
+            &tx.from,
+            &tx.signing_bytes(),
+            &tx.signature,
+        );
+    }
     verify_signature(&tx.from, &tx.signing_bytes(), &tx.signature)
 }
 

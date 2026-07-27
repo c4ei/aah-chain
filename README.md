@@ -1,5 +1,16 @@
 # IEUM Chain
 
+## 노드와 지갑 RPC 실행
+
+```bash
+cargo run -- --port 7001 --rpc-port 8545
+```
+
+- `--port`: 노드 간 QUIC/P2P UDP 포트
+- `--rpc-port`: 월렛/geth 호환 HTTP JSON-RPC TCP 포트
+- RPC 기본 리스닝 주소는 외부에서 접근할 수 없는 `127.0.0.1`입니다.
+- 두 번째 노드는 `--port 7002 --rpc-port 8546`처럼 두 포트를 모두 다르게 지정합니다.
+
 > 사람과 사람, 체인과 체인, 가치와 생활을 잇는 가벼운 블록체인
 
 - 네트워크 이름: `IEUM`

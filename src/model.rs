@@ -8,8 +8,9 @@ pub type Address = String;
 pub struct Transaction {
     pub from: Address,
     pub to: Address,
-    pub amount: u64,
-    pub fee: u64,
+    /// 1 IEUM = 10^18 최소 단위이므로 전체 발행량을 안전하게 담도록 u128을 사용합니다.
+    pub amount: u128,
+    pub fee: u128,
     pub nonce: u64,
     pub signature: String,
 }
