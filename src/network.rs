@@ -286,7 +286,7 @@ impl P2pNode {
                             }
                             Some(NetworkCommand::Dial(address)) => {
                                 if let Err(error) = dial_address(&mut swarm, address).await {
-                                    eprintln!("{error}");
+                                    crate::log_error!("{error}");
                                 }
                             }
                             Some(NetworkCommand::Shutdown) | None => break,
@@ -301,7 +301,7 @@ impl P2pNode {
                             &mut connected_at,
                             max_message_bytes,
                         ).await {
-                            eprintln!("P2P 이벤트 처리 오류: {error}");
+                            crate::log_error!("P2P 이벤트 처리 오류: {error}");
                         }
                     }
                 }
@@ -328,7 +328,7 @@ async fn add_bootstrap_address(
             .kademlia
             .add_address(&peer_id, resolved_address.clone());
         resolved_address.push(Protocol::P2p(peer_id));
-        println!("[P2P 접속 시도] {original_address} -> {resolved_address}");
+        crate::log_info!("[P2P 접속 시도] {original_address} -> {resolved_address}");
         swarm.dial(resolved_address).map_err(|error| {
             format!("[P2P 접속 시작 실패] 주소: {original_address}, 오류: {error}")
         })?;
@@ -342,7 +342,7 @@ async fn dial_address(
 ) -> Result<(), String> {
     let resolved_addresses = resolve_dns4_addresses(&address).await?;
     for resolved_address in resolved_addresses {
-        println!("[P2P 접속 시도] {address} -> {resolved_address}");
+        crate::log_info!("[P2P 접속 시도] {address} -> {resolved_address}");
         swarm.dial(resolved_address).map_err(|error| {
             format!("[P2P 접속 시작 실패] 주소: {address}, 오류: {error}")
         })?;
@@ -385,7 +385,7 @@ async fn resolve_dns4_addresses(address: &Multiaddr) -> Result<Vec<Multiaddr>, S
                 other => resolved_address.push(other),
             }
         }
-        println!("[P2P DNS 변환] {domain} -> {ip}");
+        crate::log_info!("[P2P DNS 변환] {domain} -> {ip}");
         resolved_addresses.push(resolved_address);
     }
     resolved_addresses.sort();
@@ -394,7 +394,7 @@ async fn resolve_dns4_addresses(address: &Multiaddr) -> Result<Vec<Multiaddr>, S
 
 fn publish(swarm: &mut libp2p::Swarm<IeumBehaviour>, topic: &str, message: &WireMessage) {
     let Ok(bytes) = serde_json::to_vec(message) else {
-        eprintln!("P2P 메시지 직렬화 실패");
+        crate::log_error!("P2P 메시지 직렬화 실패");
         return;
     };
     if let Err(error) = swarm
@@ -402,7 +402,7 @@ fn publish(swarm: &mut libp2p::Swarm<IeumBehaviour>, topic: &str, message: &Wire
         .gossipsub
         .publish(gossipsub::IdentTopic::new(topic), bytes)
     {
-        eprintln!("P2P 메시지 전파 실패: {error}");
+        crate::log_error!("P2P 메시지 전파 실패: {error}");
     }
 }
 
@@ -537,7 +537,7 @@ async fn handle_swarm_event(
                 .await;
         }
         SwarmEvent::NewListenAddr { address, .. } => {
-            println!("QUIC P2P 대기: {address}/p2p/{}", swarm.local_peer_id());
+            crate::log_info!("QUIC P2P 대기: {address}/p2p/{}", swarm.local_peer_id());
         }
         // Kademlia 이벤트는 Behaviour 내부에서 이미 상태에 반영됩니다.
         // 값을 명시적으로 소비해 이벤트 필드가 사용되지 않는다는 경고를 피합니다.

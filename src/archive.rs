@@ -3,7 +3,7 @@ use crate::model::Block;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs::{self, OpenOptions};
-use std::io::{Read, Write};
+use std::io::{BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 
 pub const MAX_ACTIVE_BLOCK_BYTES: u64 = 100_000_000;
@@ -112,7 +112,8 @@ impl ArchiveStore {
         atomic_json(&checkpoint, &snapshot)?;
 
         let backup = unique_backup_path(&self.backup_dir(), period);
-        fs::rename(&active, backup).map_err(|error| error.to_string())?;
+        compress_file(&active, &backup)?;
+        fs::remove_file(&active).map_err(|error| error.to_string())?;
         let _ = fs::remove_file(self.active_dir().join("period"));
         Ok(())
     }
@@ -159,13 +160,13 @@ impl ArchiveStore {
     pub fn read_backup_blocks(&self) -> Result<Vec<Block>, String> {
         let mut blocks = Vec::new();
         for path in list_files(&self.backup_dir())? {
-            if path.extension().and_then(|value| value.to_str()) != Some("jsonl") {
+            let Some(name) = path.file_name().and_then(|value| value.to_str()) else {
+                continue;
+            };
+            if !name.ends_with(".jsonl") && !name.ends_with(".jsonl.zst") {
                 continue;
             }
-            let mut text = String::new();
-            fs::File::open(path)
-                .and_then(|mut file| file.read_to_string(&mut text))
-                .map_err(|error| error.to_string())?;
+            let text = read_backup_text(&path)?;
             for line in text.lines().filter(|line| !line.trim().is_empty()) {
                 blocks.push(serde_json::from_str(line).map_err(|error| error.to_string())?);
             }
@@ -174,13 +175,13 @@ impl ArchiveStore {
         Ok(blocks)
     }
 
-    /// 전전년도 이전의 월별 파일을 연도별 `YYYY.jsonl` 하나로 합칩니다.
+    /// 전전년도 이전의 월별 파일을 연도별 `YYYY.jsonl.zst` 하나로 합칩니다.
     /// 최근 연도와 직전 연도는 `YYYYMM M` 월 파일을 유지해 Explorer 조회 범위를 좁힙니다.
     pub fn compact_old_backups(&self, current_year: i32) -> Result<Vec<PathBuf>, String> {
         let mut created = Vec::new();
         for year in 1970..=current_year.saturating_sub(2) {
             let prefix = format!("{year:04}");
-            let annual = self.backup_dir().join(format!("{prefix}.jsonl"));
+            let annual = self.backup_dir().join(format!("{prefix}.jsonl.zst"));
             let mut monthly = list_files(&self.backup_dir())?
                 .into_iter()
                 .filter(|path| {
@@ -194,16 +195,21 @@ impl ArchiveStore {
                 continue;
             }
             let temporary = annual.with_extension("tmp");
-            let mut output = OpenOptions::new()
+            let output = OpenOptions::new()
                 .create(true)
                 .write(true)
                 .truncate(true)
                 .open(&temporary)
                 .map_err(|error| error.to_string())?;
+            let mut output =
+                zstd::stream::write::Encoder::new(output, 3).map_err(|error| error.to_string())?;
             for path in &monthly {
-                let mut input = fs::File::open(path).map_err(|error| error.to_string())?;
-                std::io::copy(&mut input, &mut output).map_err(|error| error.to_string())?;
+                let text = read_backup_text(path)?;
+                output
+                    .write_all(text.as_bytes())
+                    .map_err(|error| error.to_string())?;
             }
+            let output = output.finish().map_err(|error| error.to_string())?;
             output.sync_all().map_err(|error| error.to_string())?;
             fs::rename(&temporary, &annual).map_err(|error| error.to_string())?;
             for path in monthly {
@@ -244,17 +250,44 @@ fn atomic_json(path: &Path, value: &impl Serialize) -> Result<(), String> {
 }
 
 fn unique_backup_path(directory: &Path, period: &str) -> PathBuf {
-    let first = directory.join(format!("{period}.jsonl"));
+    let first = directory.join(format!("{period}.jsonl.zst"));
     if !first.exists() {
         return first;
     }
     for part in 2u32.. {
-        let candidate = directory.join(format!("{period}-part{part:02}.jsonl"));
+        let candidate = directory.join(format!("{period}-part{part:02}.jsonl.zst"));
         if !candidate.exists() {
             return candidate;
         }
     }
     unreachable!()
+}
+
+fn compress_file(source: &Path, destination: &Path) -> Result<(), String> {
+    let temporary = destination.with_extension("tmp");
+    let input = fs::File::open(source).map_err(|error| error.to_string())?;
+    let output = fs::File::create(&temporary).map_err(|error| error.to_string())?;
+    let mut encoder =
+        zstd::stream::write::Encoder::new(output, 3).map_err(|error| error.to_string())?;
+    std::io::copy(&mut BufReader::new(input), &mut encoder).map_err(|error| error.to_string())?;
+    let output = encoder.finish().map_err(|error| error.to_string())?;
+    output.sync_all().map_err(|error| error.to_string())?;
+    fs::rename(temporary, destination).map_err(|error| error.to_string())
+}
+
+fn read_backup_text(path: &Path) -> Result<String, String> {
+    let input = fs::File::open(path).map_err(|error| error.to_string())?;
+    let mut text = String::new();
+    if path.extension().and_then(|value| value.to_str()) == Some("zst") {
+        zstd::stream::read::Decoder::new(BufReader::new(input))
+            .and_then(|mut decoder| decoder.read_to_string(&mut text))
+            .map_err(|error| error.to_string())?;
+    } else {
+        BufReader::new(input)
+            .read_to_string(&mut text)
+            .map_err(|error| error.to_string())?;
+    }
+    Ok(text)
 }
 
 fn list_files(directory: &Path) -> Result<Vec<PathBuf>, String> {
@@ -322,6 +355,11 @@ mod tests {
             .unwrap();
         let status = store.status().unwrap();
         assert_eq!(status.backups.len(), 1);
+        assert_eq!(
+            status.backups[0].file_name().unwrap().to_string_lossy(),
+            "197001M.jsonl.zst"
+        );
+        assert_eq!(store.read_backup_blocks().unwrap(), vec![first]);
         assert!(status.latest_checkpoint.is_some());
         assert!(status.active_bytes <= status.max_active_bytes);
         let snapshot = store.load_latest_snapshot().unwrap().unwrap();

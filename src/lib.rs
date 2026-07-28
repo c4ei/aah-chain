@@ -6,6 +6,7 @@ pub mod consensus_runtime;
 pub mod consensus_wal;
 pub mod checkpoint;
 pub mod genesis;
+pub mod logger;
 pub mod mempool;
 pub mod model;
 pub mod network;

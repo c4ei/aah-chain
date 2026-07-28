@@ -132,7 +132,7 @@ impl RpcServer {
         let listener = tokio::net::TcpListener::bind(address)
             .await
             .map_err(|error| format!("JSON-RPC 포트 열기 실패: {error}"))?;
-        println!("geth 호환 JSON-RPC 대기: http://{address}");
+        crate::log_info!("geth 호환 JSON-RPC 대기: http://{address}");
         axum::serve(listener, app)
             .await
             .map_err(|error| format!("JSON-RPC 서버 오류: {error}"))

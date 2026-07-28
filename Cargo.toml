@@ -1,6 +1,6 @@
 [package]
 name = "ieum-chain"
-version = "0.6.8"
+version = "0.6.9"
 edition = "2024"
 
 [dependencies]
@@ -30,3 +30,4 @@ serde_json = "1"
 sha2 = "0.10"
 sha3 = "0.10"
 tokio = { version = "1.47", features = ["full"] }
+zstd = "0.13"

@@ -10,7 +10,7 @@
 ```
 
 - `max_block_bytes`: 블록 **한 개**의 최대 직렬화 크기(기본 1 MiB)
-- `max_active_block_bytes`: `data/ledger/active`에 있는 **활성 블록 전체 합계**의 최대 크기(99 MB)
+- `max_active_block_bytes`: `data/ledger/active`에 있는 **활성 블록 전체 합계**의 최대 크기(99,000,000바이트)
 
 기존 `max_segment_bytes` 이름은 과거 설정을 읽기 위한 별칭으로만 남겼습니다.
 
@@ -46,8 +46,10 @@ data/ledger/
 
 - 현재 기간: `active/`만 필수
 - 최근·직전 연도: `YYYYMM M.jsonl` 월 단위
-- 전전년도 이전: `compact_old_backups()` 실행 시 `YYYY.jsonl` 연 단위
-- 같은 달에 99 MB를 채우면 `YYYYMM M-part02.jsonl`처럼 분할
+- 마감된 백업: `YYYYMM M.jsonl.zst` 형식으로 zstd 압축
+- 전전년도 이전: `compact_old_backups()` 실행 시 `YYYY.jsonl.zst` 연 단위
+- 같은 달에 99,000,000바이트를 채우면 `YYYYMM M-part02.jsonl.zst`처럼 분할
+- 기존 버전의 비압축 `.jsonl` 백업도 계속 읽을 수 있음
 - 모바일: 기본적으로 체크포인트와 활성 블록만 보관, 백업은 사용자가 선택
 - Explorer 서버: 백업을 보관해 과거 블록/거래 검색 제공
 

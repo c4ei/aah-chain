@@ -1,6 +1,7 @@
 use clap::{Args as ClapArgs, Parser, Subcommand};
 use ieum_chain::{
-    NetworkConfig, P2pNode, RpcConfig, RpcServer, node_key::load_or_create_node_key,
+    NetworkConfig, P2pNode, RpcConfig, RpcServer, log_info,
+    logger::init_server_log, node_key::load_or_create_node_key,
 };
 use libp2p::Multiaddr;
 use serde::Deserialize;
@@ -105,6 +106,9 @@ async fn main() -> Result<(), String> {
         }
     };
     let _instance_guard = acquire_instance_guard(is_client)?;
+    if !is_client {
+        init_server_log("data/logs/ieum-chain.log")?;
+    }
     prepare_ports(&mut args, is_client)?;
 
     let identity_key = load_or_create_node_key(&args.node_key)?;
@@ -127,18 +131,18 @@ async fn main() -> Result<(), String> {
     };
     let mut rpc_task = tokio::spawn(RpcServer::new(rpc_config).run());
 
-    println!("IEUM {mode} 노드 시작: {peer_id}");
-    println!("영구 노드 키: {}", args.node_key.display());
-    println!("P2P 포트: {}/UDP", args.port);
-    println!("RPC 주소: {}:{}", args.rpc_host, args.rpc_port);
-    println!("원장 경로: {}", args.rpc_data_dir.display());
+    log_info!("IEUM {mode} 노드 시작: {peer_id}");
+    log_info!("영구 노드 키: {}", args.node_key.display());
+    log_info!("P2P 포트: {}/UDP", args.port);
+    log_info!("RPC 주소: {}:{}", args.rpc_host, args.rpc_port);
+    log_info!("원장 경로: {}", args.rpc_data_dir.display());
     if is_client {
-        println!("운영 서버 자동 연결 대상:");
+        log_info!("운영 서버 자동 연결 대상:");
         for peer in &startup_peers {
-            println!("  - {peer}");
+            log_info!("  - {peer}");
         }
     }
-    println!("같은 LAN의 노드는 mDNS로 자동 검색합니다. 종료: Ctrl+C");
+    log_info!("같은 LAN의 노드는 mDNS로 자동 검색합니다. 종료: Ctrl+C");
 
     loop {
         tokio::select! {
@@ -151,7 +155,7 @@ async fn main() -> Result<(), String> {
             }
             event = events.recv() => {
                 match event {
-                    Some(event) => println!("{event}"),
+                    Some(event) => log_info!("{event}"),
                     None => {
                         rpc_task.abort();
                         return Err("P2P 네트워크 이벤트 채널이 종료되었습니다.".into());
@@ -159,7 +163,7 @@ async fn main() -> Result<(), String> {
                 }
             }
             _ = tokio::signal::ctrl_c() => {
-                println!("노드를 안전하게 종료합니다.");
+                log_info!("노드를 안전하게 종료합니다.");
                 rpc_task.abort();
                 break;
             }
@@ -193,7 +197,7 @@ fn prepare_ports(args: &mut NodeArgs, is_client: bool) -> Result<(), String> {
         let original_p2p = args.port;
         args.port = first_available_udp_port(args.port, 100)?;
         if args.port != original_p2p {
-            println!(
+            log_info!(
                 "UDP {original_p2p} 포트가 사용 중이므로 클라이언트 P2P 포트를 {}로 자동 변경합니다.",
                 args.port
             );
@@ -202,7 +206,7 @@ fn prepare_ports(args: &mut NodeArgs, is_client: bool) -> Result<(), String> {
         let original_rpc = args.rpc_port;
         args.rpc_port = first_available_tcp_port(args.rpc_host, args.rpc_port, 100)?;
         if args.rpc_port != original_rpc {
-            println!(
+            log_info!(
                 "TCP {original_rpc} 포트가 사용 중이므로 클라이언트 RPC 포트를 {}로 자동 변경합니다.",
                 args.rpc_port
             );
