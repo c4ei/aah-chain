@@ -1,5 +1,13 @@
 # 변경 기록
 
+## 0.11.1 - 2026-07-28
+
+- snapshot chunk 병렬 할당, 피어별 timeout·재시도·failover 스케줄러
+- embedded DB WAL 우선 복구와 fsync checkpoint
+- 외부 signer timeout, 호출 간격 제한, 다중 signer HA failover
+- Prometheus text 형식의 노드 핵심 metrics 수집기
+- nil/round-change certificate의 후속 네트워크 결합 기준 문서화
+
 ## 0.10.1 - 2026-07-28
 
 - snapshot chunk별 SHA-256 검증과 다운로드 재개 지점 영속화

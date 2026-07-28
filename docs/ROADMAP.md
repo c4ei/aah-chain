@@ -20,6 +20,7 @@
 | v0.8.2 | 처리완료 | 컴파일 수정과 fmt·clippy·test·release build CI |
 | v0.9.1 | 테스트넷 구현 | locked/valid value, 단계별 timeout, 이중투표 증거, 실제 4프로세스 시험 |
 | v0.10.1 | 테스트넷 구현 | snapshot chunk 재개, 다중 피어 tip/state root quorum, embedded DB, 외부 signer |
+| v0.11.1 | 테스트넷 기반 | snapshot 병렬 재시도, embedded WAL, signer timeout·HA, metrics 코어 |
 
 ## 현재 제한
 
@@ -50,11 +51,13 @@
 
 ## 0.11.1 권장 범위
 
-- snapshot P2P 병렬 chunk 다운로드와 peer별 재시도
-- RocksDB 또는 SQLite WAL backend
-- nil vote/proposal과 round-change certificate
-- 외부 signer timeout·rate limit·HA failover
-- Prometheus metrics와 운영 대시보드
+- [완료] snapshot P2P 병렬 chunk 할당과 peer별 timeout·재시도 코어
+- [완료] 기존 embedded DB의 WAL 우선 복구·checkpoint
+- [후속] nil vote/proposal과 round-change certificate의 합의·P2P 결합
+- [완료] 외부 signer timeout·rate limit·HA failover
+- [완료] Prometheus text metrics 수집 코어
+- [후속] metrics HTTP endpoint·Grafana dashboard
+- [후속] RocksDB/SQLite 실제 backend 선택과 migration 도구
 
 ### Step 7: 안전한 체인 동기화
 

@@ -21,6 +21,7 @@ struct DatabaseImage {
 #[derive(Clone, Debug)]
 pub struct EmbeddedDb {
     path: PathBuf,
+    wal_path: PathBuf,
     image: DatabaseImage,
 }
 
@@ -29,7 +30,9 @@ impl EmbeddedDb {
         let directory = data_dir.as_ref().join("db");
         fs::create_dir_all(&directory).map_err(|error| error.to_string())?;
         let path = directory.join("ieum-state.db");
-        let image = match fs::read(&path) {
+        let wal_path = directory.join("ieum-state.wal");
+        let source = if wal_path.exists() { &wal_path } else { &path };
+        let image = match fs::read(source) {
             Ok(bytes) => {
                 let image: DatabaseImage =
                     serde_json::from_slice(&bytes).map_err(|error| format!("embedded DB 손상: {error}"))?;
@@ -45,7 +48,11 @@ impl EmbeddedDb {
             },
             Err(error) => return Err(error.to_string()),
         };
-        Ok(Self { path, image })
+        let mut db = Self { path, wal_path, image };
+        if db.wal_path.exists() {
+            db.checkpoint()?;
+        }
+        Ok(db)
     }
 
     pub fn get(&self, key: &str) -> Option<&[u8]> {
@@ -72,7 +79,7 @@ impl EmbeddedDb {
     pub fn commit(&mut self) -> Result<u64, String> {
         self.image.generation = self.image.generation.saturating_add(1);
         let bytes = serde_json::to_vec(&self.image).map_err(|error| error.to_string())?;
-        let temporary = self.path.with_extension("tmp");
+        let temporary = self.wal_path.with_extension("tmp");
         let mut file = OpenOptions::new()
             .create(true)
             .write(true)
@@ -81,7 +88,15 @@ impl EmbeddedDb {
             .map_err(|error| error.to_string())?;
         file.write_all(&bytes).map_err(|error| error.to_string())?;
         file.sync_all().map_err(|error| error.to_string())?;
-        fs::rename(&temporary, &self.path).map_err(|error| error.to_string())?;
+        fs::rename(&temporary, &self.wal_path).map_err(|error| error.to_string())?;
+        self.checkpoint()?;
+        Ok(self.image.generation)
+    }
+
+    fn checkpoint(&mut self) -> Result<(), String> {
+        if self.wal_path.exists() {
+            fs::rename(&self.wal_path, &self.path).map_err(|error| error.to_string())?;
+        }
         if let Some(parent) = self.path.parent() {
             OpenOptions::new()
                 .read(true)
@@ -89,7 +104,7 @@ impl EmbeddedDb {
                 .and_then(|directory| directory.sync_all())
                 .map_err(|error| error.to_string())?;
         }
-        Ok(self.image.generation)
+        Ok(())
     }
 
     pub fn generation(&self) -> u64 {
