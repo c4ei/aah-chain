@@ -3,7 +3,7 @@
 ## 노드와 지갑 RPC 실행
 
 ```bash
-cargo run -- --port 7001
+cargo run -- server --port 7001
 ```
 
 - `--port`: 노드 간 QUIC/P2P UDP 포트
@@ -11,7 +11,7 @@ cargo run -- --port 7001
 - RPC 기본 리스닝 주소는 외부에서 접근할 수 없는 `127.0.0.1`입니다.
 - 운영 서버에서 Caddy는 `127.0.0.1:8989`로 reverse proxy하고, RPC 포트를 인터넷에
   직접 열지 않습니다.
-- 두 번째 노드는 `--port 7002 --rpc-port 8990`처럼 두 포트를 모두 다르게 지정합니다.
+- 일반 PC 노드는 `client --peer <운영 서버 주소>`로 실행합니다.
 
 > 사람과 사람, 체인과 체인, 가치와 생활을 잇는 가벼운 블록체인
 
@@ -65,24 +65,27 @@ VS Code 확장은 `rust-analyzer`를 설치하면 됩니다.
 cargo fmt --check
 cargo clippy --all-targets --all-features -- -D warnings
 cargo test
-cargo run -- --port 7001
+cargo run -- server --port 7001
 ```
 
 같은 공유기 안에서 두 번째 터미널:
 
 ```bash
-cargo run -- --port 7002
+cargo run -- client --port 7002 \
+  --peer /dns4/node.ieum.aah.name/udp/7001/quic-v1/p2p/서버PeerId
 ```
 
 mDNS가 두 노드를 자동으로 찾습니다. 서버가 서로 다른 네트워크라면 첫 노드 출력의
 `/ip4/.../udp/7001/quic-v1/p2p/...` 주소를 사용합니다.
 
 ```bash
-cargo run -- --port 7002 \
-  --peer /ip4/서버IP/udp/7001/quic-v1/p2p/첫노드PeerId
+cargo run -- client --port 7002 \
+  --peer /dns4/node.ieum.aah.name/udp/7001/quic-v1/p2p/서버PeerId
 ```
 
 방화벽에서는 해당 포트의 **UDP**를 열어야 합니다. TCP 7001만 열면 QUIC가 연결되지 않습니다.
+운영 명령과 일반 PC 명령의 전체 설명은
+[`docs/IEUM_SERVER_CLIENT_RUN.md`](docs/IEUM_SERVER_CLIENT_RUN.md)를 참고합니다.
 
 ## 표준화한 폴더 구조
 

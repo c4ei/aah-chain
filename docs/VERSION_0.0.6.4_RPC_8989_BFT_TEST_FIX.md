@@ -21,13 +21,13 @@
 기본 RPC 포트가 8989이므로 다음처럼 실행합니다.
 
 ```bash
-cargo run --release -- --port 7001
+cargo run --release -- server --port 7001
 ```
 
 명시적으로 적어도 동일합니다.
 
 ```bash
-cargo run --release -- --port 7001 --rpc-host 127.0.0.1 --rpc-port 8989
+cargo run --release -- server --port 7001 --rpc-host 127.0.0.1 --rpc-port 8989
 ```
 
 정상 확인:
@@ -44,7 +44,10 @@ curl -sS http://127.0.0.1:8989 \
 한 서버에서 두 번째 노드를 실행할 때는 P2P와 RPC 포트가 모두 달라야 합니다.
 
 ```bash
-cargo run --release -- --port 7002 --rpc-port 8990
+cargo run --release -- client \
+  --port 7002 \
+  --rpc-port 8990 \
+  --peer /dns4/node.ieum.aah.name/udp/7001/quic-v1/p2p/서버PeerId
 ```
 
 ## 검증 명령

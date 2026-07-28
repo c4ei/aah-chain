@@ -18,7 +18,7 @@ VS Code가 추천하는 `rust-analyzer` 확장을 설치합니다.
 ```bash
 cargo fmt
 cargo test
-cargo run -- --port 7001
+cargo run -- server --port 7001
 ```
 
 첫 libp2p 빌드는 의존성이 많아 시간이 걸릴 수 있지만 두 번째부터는 변경된 부분만

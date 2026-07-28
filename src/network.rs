@@ -3,7 +3,7 @@ use crate::model::Block;
 use crate::peer_guard::{PeerDecision, PeerGuard};
 use futures::StreamExt;
 use libp2p::{
-    Multiaddr, PeerId, SwarmBuilder, gossipsub, identify, kad, mdns,
+    Multiaddr, PeerId, SwarmBuilder, gossipsub, identify, identity::Keypair, kad, mdns,
     multiaddr::Protocol,
     swarm::{NetworkBehaviour, SwarmEvent},
 };
@@ -19,6 +19,7 @@ pub const CONSENSUS_TOPIC: &str = "ieum-chain/consensus/1";
 pub struct NetworkConfig {
     pub listen_port: u16,
     pub bootstrap_peers: Vec<Multiaddr>,
+    pub identity_key: Option<Keypair>,
     pub max_message_bytes: usize,
     pub idle_timeout: Duration,
     pub ban_duration: Duration,
@@ -29,6 +30,7 @@ impl Default for NetworkConfig {
         Self {
             listen_port: 7001,
             bootstrap_peers: Vec::new(),
+            identity_key: None,
             max_message_bytes: 512 * 1024,
             idle_timeout: Duration::from_secs(30),
             ban_duration: Duration::from_secs(10 * 60),
@@ -131,7 +133,10 @@ impl P2pNode {
         let max_message_bytes = config.max_message_bytes;
         let idle_timeout = config.idle_timeout;
 
-        let mut swarm = SwarmBuilder::with_new_identity()
+        let identity_key = config
+            .identity_key
+            .unwrap_or_else(Keypair::generate_ed25519);
+        let mut swarm = SwarmBuilder::with_existing_identity(identity_key)
             .with_tokio()
             .with_quic()
             .with_behaviour(

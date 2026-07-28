@@ -9,6 +9,7 @@ pub mod genesis;
 pub mod mempool;
 pub mod model;
 pub mod network;
+pub mod node_key;
 pub mod peer_guard;
 pub mod raw_transaction;
 pub mod rpc;
