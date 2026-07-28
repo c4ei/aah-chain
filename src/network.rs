@@ -2,13 +2,16 @@ use crate::consensus::ConsensusMessage;
 use crate::model::Block;
 use crate::peer_guard::{PeerDecision, PeerGuard};
 use futures::StreamExt;
+use libp2p::core::ConnectedPoint;
 use libp2p::{
     Multiaddr, PeerId, SwarmBuilder, gossipsub, identify, identity::Keypair, kad, mdns,
     multiaddr::Protocol,
-    swarm::{NetworkBehaviour, SwarmEvent},
+    swarm::{ConnectionId, NetworkBehaviour, SwarmEvent},
 };
 use serde::{Deserialize, Serialize};
-use std::time::Duration;
+use std::collections::HashMap;
+use std::fmt;
+use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 
 pub const BLOCK_TOPIC: &str = "ieum-chain/blocks/1";
@@ -59,8 +62,24 @@ pub enum NetworkCommand {
 #[derive(Debug)]
 pub enum NetworkEvent {
     PeerDiscovered(PeerId),
-    PeerConnected(PeerId),
-    PeerDisconnected(PeerId),
+    PeerConnected {
+        peer_id: PeerId,
+        remote_address: Multiaddr,
+        remote_ip: Option<String>,
+        direction: &'static str,
+        connection_id: String,
+        current_connections: usize,
+    },
+    PeerDisconnected {
+        peer_id: PeerId,
+        remote_address: Multiaddr,
+        remote_ip: Option<String>,
+        direction: &'static str,
+        connection_id: String,
+        connected_for: Option<Duration>,
+        current_connections: usize,
+        cause: Option<String>,
+    },
     BlockReceived {
         source: PeerId,
         block: Block,
@@ -69,6 +88,50 @@ pub enum NetworkEvent {
         source: PeerId,
         message: ConsensusMessage,
     },
+}
+
+impl fmt::Display for NetworkEvent {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::PeerConnected {
+                peer_id,
+                remote_address,
+                remote_ip,
+                direction,
+                connection_id,
+                current_connections,
+            } => write!(
+                formatter,
+                "[P2P 연결]\n  방향: {direction}\n  PeerId: {peer_id}\n  원격 주소: {remote_address}\n  원격 IP: {}\n  연결 ID: {connection_id}\n  현재 연결: {current_connections}",
+                remote_ip.as_deref().unwrap_or("확인 불가")
+            ),
+            Self::PeerDisconnected {
+                peer_id,
+                remote_address,
+                remote_ip,
+                direction,
+                connection_id,
+                connected_for,
+                current_connections,
+                cause,
+            } => write!(
+                formatter,
+                "[P2P 종료]\n  방향: {direction}\n  PeerId: {peer_id}\n  원격 주소: {remote_address}\n  원격 IP: {}\n  연결 ID: {connection_id}\n  연결 시간: {}\n  종료 원인: {}\n  현재 연결: {current_connections}",
+                remote_ip.as_deref().unwrap_or("확인 불가"),
+                connected_for
+                    .map(format_duration)
+                    .unwrap_or_else(|| "확인 불가".into()),
+                cause.as_deref().unwrap_or("정상 종료")
+            ),
+            Self::PeerDiscovered(peer_id) => write!(formatter, "[P2P 발견] PeerId: {peer_id}"),
+            Self::BlockReceived { source, block } => {
+                write!(formatter, "[P2P 블록 수신] PeerId: {source}, 블록: {block:?}")
+            }
+            Self::ConsensusReceived { source, message } => {
+                write!(formatter, "[P2P 합의 수신] PeerId: {source}, 메시지: {message:?}")
+            }
+        }
+    }
 }
 
 #[derive(NetworkBehaviour)]
@@ -189,6 +252,7 @@ impl P2pNode {
         let (command_tx, mut command_rx) = mpsc::channel(128);
         let (event_tx, event_rx) = mpsc::channel(256);
         let mut guard = PeerGuard::new(config.ban_duration);
+        let mut connected_at: HashMap<ConnectionId, Instant> = HashMap::new();
 
         tokio::spawn(async move {
             loop {
@@ -215,6 +279,7 @@ impl P2pNode {
                             event,
                             &event_tx,
                             &mut guard,
+                            &mut connected_at,
                             max_message_bytes,
                         ).await {
                             eprintln!("P2P 이벤트 처리 오류: {error}");
@@ -263,6 +328,7 @@ async fn handle_swarm_event(
     event: SwarmEvent<IeumBehaviourEvent>,
     event_tx: &mpsc::Sender<NetworkEvent>,
     guard: &mut PeerGuard,
+    connected_at: &mut HashMap<ConnectionId, Instant>,
     max_message_bytes: usize,
 ) -> Result<(), String> {
     match event {
@@ -329,11 +395,50 @@ async fn handle_swarm_event(
                 .await
                 .map_err(|e| e.to_string())?;
         }
-        SwarmEvent::ConnectionEstablished { peer_id, .. } => {
-            let _ = event_tx.send(NetworkEvent::PeerConnected(peer_id)).await;
+        SwarmEvent::ConnectionEstablished {
+            peer_id,
+            connection_id,
+            endpoint,
+            num_established,
+            ..
+        } => {
+            connected_at.insert(connection_id, Instant::now());
+            let remote_address = endpoint.get_remote_address().clone();
+            let _ = event_tx
+                .send(NetworkEvent::PeerConnected {
+                    peer_id,
+                    remote_ip: multiaddr_ip(&remote_address),
+                    remote_address,
+                    direction: connection_direction(&endpoint),
+                    connection_id: format!("{connection_id:?}"),
+                    current_connections: num_established.get() as usize,
+                })
+                .await;
         }
-        SwarmEvent::ConnectionClosed { peer_id, .. } => {
-            let _ = event_tx.send(NetworkEvent::PeerDisconnected(peer_id)).await;
+        SwarmEvent::ConnectionClosed {
+            peer_id,
+            connection_id,
+            endpoint,
+            num_established,
+            cause,
+            ..
+        } => {
+            let remote_address = endpoint.get_remote_address().clone();
+            let connected_for = connected_at
+                .remove(&connection_id)
+                .map(|started| started.elapsed());
+            let _ = event_tx
+                .send(NetworkEvent::PeerDisconnected {
+                    peer_id,
+                    remote_ip: multiaddr_ip(&remote_address),
+                    remote_address,
+                    direction: connection_direction(&endpoint),
+                    connection_id: format!("{connection_id:?}"),
+                    connected_for,
+                    current_connections: num_established as usize,
+                    cause: cause.map(|error| error.to_string()),
+                })
+                .await;
         }
         SwarmEvent::NewListenAddr { address, .. } => {
             println!("QUIC P2P 대기: {address}/p2p/{}", swarm.local_peer_id());
@@ -345,4 +450,49 @@ async fn handle_swarm_event(
         _ => {}
     }
     Ok(())
+}
+
+fn connection_direction(endpoint: &ConnectedPoint) -> &'static str {
+    match endpoint {
+        ConnectedPoint::Dialer { .. } => "발신",
+        ConnectedPoint::Listener { .. } => "수신",
+    }
+}
+
+fn multiaddr_ip(address: &Multiaddr) -> Option<String> {
+    address.iter().find_map(|protocol| match protocol {
+        Protocol::Ip4(ip) => Some(ip.to_string()),
+        Protocol::Ip6(ip) => Some(ip.to_string()),
+        _ => None,
+    })
+}
+
+fn format_duration(duration: Duration) -> String {
+    let total_seconds = duration.as_secs();
+    let hours = total_seconds / 3_600;
+    let minutes = total_seconds % 3_600 / 60;
+    let seconds = total_seconds % 60;
+    if hours > 0 {
+        format!("{hours}시간 {minutes}분 {seconds}초")
+    } else if minutes > 0 {
+        format!("{minutes}분 {seconds}초")
+    } else {
+        format!("{seconds}초")
+    }
+}
+
+#[cfg(test)]
+mod connection_log_tests {
+    use super::*;
+
+    #[test]
+    fn extracts_ipv4_from_multiaddr() {
+        let address: Multiaddr = "/ip4/192.168.1.193/udp/7001/quic-v1".parse().unwrap();
+        assert_eq!(multiaddr_ip(&address).as_deref(), Some("192.168.1.193"));
+    }
+
+    #[test]
+    fn formats_connection_duration() {
+        assert_eq!(format_duration(Duration::from_secs(3_725)), "1시간 2분 5초");
+    }
 }

@@ -11,7 +11,7 @@ cargo run -- server --port 7001
 - RPC 기본 리스닝 주소는 외부에서 접근할 수 없는 `127.0.0.1`입니다.
 - 운영 서버에서 Caddy는 `127.0.0.1:8989`로 reverse proxy하고, RPC 포트를 인터넷에
   직접 열지 않습니다.
-- 일반 PC 노드는 `client --peer <운영 서버 주소>`로 실행합니다.
+- 옵션 없이 실행하면 일반 PC 노드로 시작하고 기본 운영 서버에 자동 연결합니다.
 
 > 사람과 사람, 체인과 체인, 가치와 생활을 잇는 가벼운 블록체인
 
@@ -22,7 +22,7 @@ cargo run -- server --port 7001
 - 기존 `IEUM` geth 네트워크(Chain ID `21133`)와는 별개의 체인입니다.
 
 IEUM Chain을 배우며 확장하는 Rust 기반 경량 블록체인 테스트넷입니다.
-현재 버전은 `0.6.4`이며, 기존 Step 1~5 기능에 서명된 BFT 투표와 합의 WAL 코어를 추가했습니다.
+현재 버전은 `0.6.5`이며, 옵션 없는 클라이언트 실행과 자동 부트스트랩 연결을 지원합니다.
 
 > 주의: 학습·사설 테스트넷용 코드입니다. 실제 자산을 맡기는 메인넷에 사용하지 마세요.
 
@@ -65,23 +65,17 @@ VS Code 확장은 `rust-analyzer`를 설치하면 됩니다.
 cargo fmt --check
 cargo clippy --all-targets --all-features -- -D warnings
 cargo test
-cargo run -- server --port 7001
+cargo run --release -- server
 ```
 
 같은 공유기 안에서 두 번째 터미널:
 
 ```bash
-cargo run -- client --port 7002 \
-  --peer /dns4/node.ieum.aah.name/udp/7001/quic-v1/p2p/서버PeerId
+cargo run --release
 ```
 
-mDNS가 두 노드를 자동으로 찾습니다. 서버가 서로 다른 네트워크라면 첫 노드 출력의
-`/ip4/.../udp/7001/quic-v1/p2p/...` 주소를 사용합니다.
-
-```bash
-cargo run -- client --port 7002 \
-  --peer /dns4/node.ieum.aah.name/udp/7001/quic-v1/p2p/서버PeerId
-```
+같은 LAN에서는 mDNS도 피어를 찾으며, 외부망에서는 `config/bootstrap.json`의
+운영 서버 주소를 자동으로 사용합니다.
 
 방화벽에서는 해당 포트의 **UDP**를 열어야 합니다. TCP 7001만 열면 QUIC가 연결되지 않습니다.
 운영 명령과 일반 PC 명령의 전체 설명은

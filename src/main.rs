@@ -3,15 +3,20 @@ use ieum_chain::{
     NetworkConfig, P2pNode, RpcConfig, RpcServer, node_key::load_or_create_node_key,
 };
 use libp2p::Multiaddr;
+use serde::Deserialize;
+use std::fs;
 use std::net::{IpAddr, Ipv4Addr};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
+
+const DEFAULT_BOOTSTRAP_CONFIG: &str = "config/bootstrap.json";
+const DEFAULT_BOOTSTRAP_PEER: &str = "/dns4/node.ieum.aah.name/udp/7001/quic-v1/p2p/12D3KooWAVRZjnbP8nXp8vD6irYFAXdLJVyczEFWdKLFzKnKDATx";
 
 #[derive(Debug, Parser)]
 #[command(name = "ieum-chain", version, about = "가벼운 IEUM 테스트넷 노드")]
 struct Args {
     #[command(subcommand)]
-    command: Command,
+    command: Option<Command>,
 }
 
 #[derive(Debug, Subcommand)]
@@ -54,21 +59,47 @@ struct ClientArgs {
     #[command(flatten)]
     node: NodeArgs,
 
-    /// 운영 서버 부트스트랩 주소. 여러 서버를 지정하려면 옵션을 반복합니다.
-    #[arg(
-        long,
-        required = true,
-        help = "/dns4/node.ieum.aah.name/udp/7001/quic-v1/p2p/PeerId"
-    )]
+    /// 추가 운영 서버 주소. 지정하지 않으면 config/bootstrap.json을 자동으로 읽습니다.
+    #[arg(long, help = "/dns4/node.ieum.aah.name/udp/7001/quic-v1/p2p/PeerId")]
     peer: Vec<Multiaddr>,
+
+    /// 자동으로 읽을 부트스트랩 설정 파일
+    #[arg(long, default_value = DEFAULT_BOOTSTRAP_CONFIG)]
+    bootstrap_config: PathBuf,
 }
 
 #[tokio::main]
 async fn main() -> Result<(), String> {
     let args = Args::parse();
     let (mode, args, bootstrap_peers) = match args.command {
-        Command::Server(args) => ("서버", args, Vec::new()),
-        Command::Client(client) => ("일반 PC", client.node, client.peer),
+        Some(Command::Server(mut args)) => {
+            if args.node_key == PathBuf::from("data/node.key") {
+                args.node_key = PathBuf::from("data/server.node.key");
+            }
+            ("서버", args, Vec::new())
+        }
+        Some(Command::Client(mut client)) => {
+            if client.node.node_key == PathBuf::from("data/node.key") {
+                client.node.node_key = PathBuf::from("data/client.node.key");
+            }
+            let peers = load_bootstrap_peers(&client.bootstrap_config, client.peer)?;
+            ("일반 PC", client.node, peers)
+        }
+        None => {
+            let node = NodeArgs {
+                port: 7001,
+                max_message_bytes: 524_288,
+                rpc_port: 8989,
+                rpc_host: IpAddr::V4(Ipv4Addr::LOCALHOST),
+                rpc_data_dir: PathBuf::from("data/ledger"),
+                node_key: PathBuf::from("data/client.node.key"),
+            };
+            let peers = load_bootstrap_peers(
+                Path::new(DEFAULT_BOOTSTRAP_CONFIG),
+                Vec::new(),
+            )?;
+            ("일반 PC", node, peers)
+        }
     };
     let identity_key = load_or_create_node_key(&args.node_key)?;
     let config = NetworkConfig {
@@ -104,7 +135,7 @@ async fn main() -> Result<(), String> {
             }
             event = events.recv() => {
                 match event {
-                    Some(event) => println!("네트워크 이벤트: {event:?}"),
+                    Some(event) => println!("{event}"),
                     None => {
                         rpc_task.abort();
                         return Err("P2P 네트워크 이벤트 채널이 종료되었습니다.".into());
@@ -119,4 +150,76 @@ async fn main() -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum BootstrapConfig {
+    Addresses(Vec<String>),
+    Object { peers: Vec<String> },
+}
+
+fn load_bootstrap_peers(
+    path: &Path,
+    mut command_line_peers: Vec<Multiaddr>,
+) -> Result<Vec<Multiaddr>, String> {
+    let mut peers = if path.exists() {
+        let text = fs::read_to_string(path)
+            .map_err(|error| format!("부트스트랩 설정 읽기 실패({}): {error}", path.display()))?;
+        let configured: BootstrapConfig = serde_json::from_str(&text).map_err(|error| {
+            format!("부트스트랩 설정 형식 오류({}): {error}", path.display())
+        })?;
+        let addresses = match configured {
+            BootstrapConfig::Addresses(peers) | BootstrapConfig::Object { peers } => peers,
+        };
+        addresses
+            .into_iter()
+            .map(|address| {
+                address.parse().map_err(|error| {
+                    format!("부트스트랩 주소 형식 오류({address}): {error}")
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()?
+    } else if path == Path::new(DEFAULT_BOOTSTRAP_CONFIG) {
+        vec![DEFAULT_BOOTSTRAP_PEER
+            .parse()
+            .map_err(|error| format!("내장 부트스트랩 주소 오류: {error}"))?]
+    } else if command_line_peers.is_empty() {
+        return Err(format!(
+            "부트스트랩 설정 파일이 없습니다: {}",
+            path.display()
+        ));
+    } else {
+        Vec::new()
+    };
+    peers.append(&mut command_line_peers);
+    peers.sort();
+    peers.dedup();
+    if peers.is_empty() {
+        return Err(format!(
+            "부트스트랩 피어가 없습니다. {}에 운영 서버 주소를 등록하세요.",
+            path.display()
+        ));
+    }
+    Ok(peers)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bootstrap_config_accepts_address_array() {
+        let config: BootstrapConfig = serde_json::from_str(
+            r#"["/dns4/node.ieum.aah.name/udp/7001/quic-v1/p2p/12D3KooWAVRZjnbP8nXp8vD6irYFAXdLJVyczEFWdKLFzKnKDATx"]"#,
+        )
+        .unwrap();
+        match config {
+            BootstrapConfig::Addresses(peers) => {
+                assert_eq!(peers.len(), 1);
+                assert_eq!(peers[0], DEFAULT_BOOTSTRAP_PEER);
+            }
+            BootstrapConfig::Object { .. } => panic!("배열 형식이어야 합니다."),
+        }
+    }
 }
