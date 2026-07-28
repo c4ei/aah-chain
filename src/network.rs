@@ -9,9 +9,11 @@ use libp2p::{
     swarm::{ConnectionId, NetworkBehaviour, SwarmEvent},
 };
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
+use std::net::IpAddr;
 use std::time::{Duration, Instant};
+use tokio::net::lookup_host;
 use tokio::sync::mpsc;
 
 pub const BLOCK_TOPIC: &str = "ieum-chain/blocks/1";
@@ -260,9 +262,9 @@ impl P2pNode {
             .map_err(|error| format!("리스닝 주소 오류: {error}"))?;
         swarm.listen_on(listen).map_err(|error| error.to_string())?;
 
-        // 외부망에서는 /ip4/주소/udp/포트/quic-v1/p2p/PeerId 형식으로 지정합니다.
+        // 설정에는 /dns4/도메인 주소를 유지하되 QUIC dial 직전에 IPv4로 변환합니다.
         for address in config.bootstrap_peers {
-            add_bootstrap_address(&mut swarm, address)?;
+            add_bootstrap_address(&mut swarm, address).await?;
         }
         let _ = swarm.behaviour_mut().kademlia.bootstrap();
 
@@ -283,9 +285,8 @@ impl P2pNode {
                                 publish(&mut swarm, CONSENSUS_TOPIC, &WireMessage::Consensus(message));
                             }
                             Some(NetworkCommand::Dial(address)) => {
-                                println!("[P2P 접속 시도] {address}");
-                                if let Err(error) = swarm.dial(address) {
-                                    eprintln!("[P2P 접속 시작 실패] {error}");
+                                if let Err(error) = dial_address(&mut swarm, address).await {
+                                    eprintln!("{error}");
                                 }
                             }
                             Some(NetworkCommand::Shutdown) | None => break,
@@ -311,24 +312,84 @@ impl P2pNode {
     }
 }
 
-fn add_bootstrap_address(
+async fn add_bootstrap_address(
     swarm: &mut libp2p::Swarm<IeumBehaviour>,
-    mut address: Multiaddr,
+    address: Multiaddr,
 ) -> Result<(), String> {
-    let dial_address = address.clone();
-    let peer_id = match address.pop() {
-        Some(Protocol::P2p(peer_id)) => peer_id,
-        _ => return Err("부트스트랩 주소 끝에는 /p2p/PeerId가 필요합니다.".into()),
+    let original_address = address.clone();
+    let resolved_addresses = resolve_dns4_addresses(&address).await?;
+    for mut resolved_address in resolved_addresses {
+        let peer_id = match resolved_address.pop() {
+            Some(Protocol::P2p(peer_id)) => peer_id,
+            _ => return Err("부트스트랩 주소 끝에는 /p2p/PeerId가 필요합니다.".into()),
+        };
+        swarm
+            .behaviour_mut()
+            .kademlia
+            .add_address(&peer_id, resolved_address.clone());
+        resolved_address.push(Protocol::P2p(peer_id));
+        println!("[P2P 접속 시도] {original_address} -> {resolved_address}");
+        swarm.dial(resolved_address).map_err(|error| {
+            format!("[P2P 접속 시작 실패] 주소: {original_address}, 오류: {error}")
+        })?;
+    }
+    Ok(())
+}
+
+async fn dial_address(
+    swarm: &mut libp2p::Swarm<IeumBehaviour>,
+    address: Multiaddr,
+) -> Result<(), String> {
+    let resolved_addresses = resolve_dns4_addresses(&address).await?;
+    for resolved_address in resolved_addresses {
+        println!("[P2P 접속 시도] {address} -> {resolved_address}");
+        swarm.dial(resolved_address).map_err(|error| {
+            format!("[P2P 접속 시작 실패] 주소: {address}, 오류: {error}")
+        })?;
+    }
+    Ok(())
+}
+
+/// QUIC transport가 직접 처리하지 못하는 `/dns4/...`를 `/ip4/...`로 변환합니다.
+/// 설정에는 도메인을 그대로 두므로 노드를 다시 시작하거나 재접속할 때 최신 IP를 조회합니다.
+async fn resolve_dns4_addresses(address: &Multiaddr) -> Result<Vec<Multiaddr>, String> {
+    let domain = address.iter().find_map(|protocol| match protocol {
+        Protocol::Dns4(domain) => Some(domain.into_owned()),
+        _ => None,
+    });
+    let Some(domain) = domain else {
+        return Ok(vec![address.clone()]);
     };
-    swarm
-        .behaviour_mut()
-        .kademlia
-        .add_address(&peer_id, address.clone());
-    address.push(Protocol::P2p(peer_id));
-    println!("[P2P 접속 시도] {dial_address}");
-    swarm.dial(address).map_err(|error| {
-        format!("[P2P 접속 시작 실패] 주소: {dial_address}, 오류: {error}")
-    })
+
+    let resolved = lookup_host((domain.as_str(), 0))
+        .await
+        .map_err(|error| format!("[P2P DNS 조회 실패] 도메인: {domain}, 오류: {error}"))?;
+    let ipv4_addresses: HashSet<_> = resolved
+        .filter_map(|socket_address| match socket_address.ip() {
+            IpAddr::V4(ip) => Some(ip),
+            IpAddr::V6(_) => None,
+        })
+        .collect();
+    if ipv4_addresses.is_empty() {
+        return Err(format!(
+            "[P2P DNS 조회 실패] 도메인 {domain}에서 IPv4 주소를 찾지 못했습니다."
+        ));
+    }
+
+    let mut resolved_addresses = Vec::with_capacity(ipv4_addresses.len());
+    for ip in ipv4_addresses {
+        let mut resolved_address = Multiaddr::empty();
+        for protocol in address.iter() {
+            match protocol {
+                Protocol::Dns4(_) => resolved_address.push(Protocol::Ip4(ip)),
+                other => resolved_address.push(other),
+            }
+        }
+        println!("[P2P DNS 변환] {domain} -> {ip}");
+        resolved_addresses.push(resolved_address);
+    }
+    resolved_addresses.sort();
+    Ok(resolved_addresses)
 }
 
 fn publish(swarm: &mut libp2p::Swarm<IeumBehaviour>, topic: &str, message: &WireMessage) {
@@ -529,5 +590,17 @@ mod connection_log_tests {
     #[test]
     fn formats_connection_duration() {
         assert_eq!(format_duration(Duration::from_secs(3_725)), "1시간 2분 5초");
+    }
+
+    #[tokio::test]
+    async fn keeps_ipv4_multiaddr_unchanged() {
+        let address: Multiaddr =
+            "/ip4/122.35.243.20/udp/7001/quic-v1/p2p/12D3KooWAVRZjnbP8nXp8vD6irYFAXdLJVyczEFWdKLFzKnKDATx"
+                .parse()
+                .unwrap();
+        assert_eq!(
+            resolve_dns4_addresses(&address).await.unwrap(),
+            vec![address]
+        );
     }
 }
