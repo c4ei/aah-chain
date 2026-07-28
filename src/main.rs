@@ -5,12 +5,14 @@ use ieum_chain::{
 use libp2p::Multiaddr;
 use serde::Deserialize;
 use std::fs;
-use std::net::{IpAddr, Ipv4Addr};
+use std::net::{IpAddr, Ipv4Addr, TcpListener, UdpSocket};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 const DEFAULT_BOOTSTRAP_CONFIG: &str = "config/bootstrap.json";
 const DEFAULT_BOOTSTRAP_PEER: &str = "/dns4/node.ieum.aah.name/udp/7001/quic-v1/p2p/12D3KooWAVRZjnbP8nXp8vD6irYFAXdLJVyczEFWdKLFzKnKDATx";
+const SERVER_INSTANCE_PORT: u16 = 49_889;
+const CLIENT_INSTANCE_PORT: u16 = 49_890;
 
 #[derive(Debug, Parser)]
 #[command(name = "ieum-chain", version, about = "가벼운 IEUM 테스트넷 노드")]
@@ -71,19 +73,22 @@ struct ClientArgs {
 #[tokio::main]
 async fn main() -> Result<(), String> {
     let args = Args::parse();
-    let (mode, args, bootstrap_peers) = match args.command {
+    let (mode, mut args, bootstrap_peers, is_client) = match args.command {
         Some(Command::Server(mut args)) => {
             if args.node_key == PathBuf::from("data/node.key") {
                 args.node_key = PathBuf::from("data/server.node.key");
             }
-            ("서버", args, Vec::new())
+            ("서버", args, Vec::new(), false)
         }
         Some(Command::Client(mut client)) => {
             if client.node.node_key == PathBuf::from("data/node.key") {
                 client.node.node_key = PathBuf::from("data/client.node.key");
             }
+            if client.node.rpc_data_dir == PathBuf::from("data/ledger") {
+                client.node.rpc_data_dir = PathBuf::from("data/client-ledger");
+            }
             let peers = load_bootstrap_peers(&client.bootstrap_config, client.peer)?;
-            ("일반 PC", client.node, peers)
+            ("일반 PC", client.node, peers, true)
         }
         None => {
             let node = NodeArgs {
@@ -91,16 +96,17 @@ async fn main() -> Result<(), String> {
                 max_message_bytes: 524_288,
                 rpc_port: 8989,
                 rpc_host: IpAddr::V4(Ipv4Addr::LOCALHOST),
-                rpc_data_dir: PathBuf::from("data/ledger"),
+                rpc_data_dir: PathBuf::from("data/client-ledger"),
                 node_key: PathBuf::from("data/client.node.key"),
             };
-            let peers = load_bootstrap_peers(
-                Path::new(DEFAULT_BOOTSTRAP_CONFIG),
-                Vec::new(),
-            )?;
-            ("일반 PC", node, peers)
+            let peers =
+                load_bootstrap_peers(Path::new(DEFAULT_BOOTSTRAP_CONFIG), Vec::new())?;
+            ("일반 PC", node, peers, true)
         }
     };
+    let _instance_guard = acquire_instance_guard(is_client)?;
+    prepare_ports(&mut args, is_client)?;
+
     let identity_key = load_or_create_node_key(&args.node_key)?;
     let config = NetworkConfig {
         listen_port: args.port,
@@ -110,18 +116,28 @@ async fn main() -> Result<(), String> {
         idle_timeout: Duration::from_secs(30),
         ban_duration: Duration::from_secs(10 * 60),
     };
+    let startup_peers = config.bootstrap_peers.clone();
     let (peer_id, _commands, mut events) = P2pNode::new(config).run().await?;
 
     let rpc_config = RpcConfig {
         listen_ip: args.rpc_host,
         port: args.rpc_port,
-        data_dir: args.rpc_data_dir,
+        data_dir: args.rpc_data_dir.clone(),
         ..RpcConfig::default()
     };
     let mut rpc_task = tokio::spawn(RpcServer::new(rpc_config).run());
 
     println!("IEUM {mode} 노드 시작: {peer_id}");
     println!("영구 노드 키: {}", args.node_key.display());
+    println!("P2P 포트: {}/UDP", args.port);
+    println!("RPC 주소: {}:{}", args.rpc_host, args.rpc_port);
+    println!("원장 경로: {}", args.rpc_data_dir.display());
+    if is_client {
+        println!("운영 서버 자동 연결 대상:");
+        for peer in &startup_peers {
+            println!("  - {peer}");
+        }
+    }
     println!("같은 LAN의 노드는 mDNS로 자동 검색합니다. 종료: Ctrl+C");
 
     loop {
@@ -150,6 +166,92 @@ async fn main() -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+struct InstanceGuard {
+    _listener: TcpListener,
+}
+
+fn acquire_instance_guard(is_client: bool) -> Result<InstanceGuard, String> {
+    let (port, mode) = if is_client {
+        (CLIENT_INSTANCE_PORT, "클라이언트")
+    } else {
+        (SERVER_INSTANCE_PORT, "서버")
+    };
+    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, port)).map_err(|_| {
+        format!(
+            "이미 IEUM {mode} 인스턴스가 실행 중입니다. 기존 프로세스를 종료한 뒤 다시 실행하세요."
+        )
+    })?;
+    Ok(InstanceGuard {
+        _listener: listener,
+    })
+}
+
+fn prepare_ports(args: &mut NodeArgs, is_client: bool) -> Result<(), String> {
+    if is_client {
+        let original_p2p = args.port;
+        args.port = first_available_udp_port(args.port, 100)?;
+        if args.port != original_p2p {
+            println!(
+                "UDP {original_p2p} 포트가 사용 중이므로 클라이언트 P2P 포트를 {}로 자동 변경합니다.",
+                args.port
+            );
+        }
+
+        let original_rpc = args.rpc_port;
+        args.rpc_port = first_available_tcp_port(args.rpc_host, args.rpc_port, 100)?;
+        if args.rpc_port != original_rpc {
+            println!(
+                "TCP {original_rpc} 포트가 사용 중이므로 클라이언트 RPC 포트를 {}로 자동 변경합니다.",
+                args.rpc_port
+            );
+        }
+    } else {
+        ensure_udp_port_available(args.port)?;
+        ensure_tcp_port_available(args.rpc_host, args.rpc_port)?;
+    }
+    Ok(())
+}
+
+fn ensure_udp_port_available(port: u16) -> Result<(), String> {
+    UdpSocket::bind((Ipv4Addr::UNSPECIFIED, port))
+        .map(|_| ())
+        .map_err(|error| {
+            format!(
+                "P2P UDP {port} 포트를 사용할 수 없습니다: {error}. 이미 IEUM 노드나 다른 프로그램이 실행 중인지 확인하세요."
+            )
+        })
+}
+
+fn ensure_tcp_port_available(host: IpAddr, port: u16) -> Result<(), String> {
+    TcpListener::bind((host, port)).map(|_| ()).map_err(|error| {
+        format!(
+            "JSON-RPC TCP {host}:{port} 포트를 사용할 수 없습니다: {error}. 이미 IEUM 노드나 다른 프로그램이 실행 중인지 확인하세요."
+        )
+    })
+}
+
+fn first_available_udp_port(start: u16, attempts: u16) -> Result<u16, String> {
+    (start..=start.saturating_add(attempts))
+        .find(|port| UdpSocket::bind((Ipv4Addr::UNSPECIFIED, *port)).is_ok())
+        .ok_or_else(|| {
+            format!(
+                "사용 가능한 클라이언트 P2P UDP 포트를 찾지 못했습니다({start}~{}).",
+                start.saturating_add(attempts)
+            )
+        })
+}
+
+fn first_available_tcp_port(host: IpAddr, start: u16, attempts: u16) -> Result<u16, String> {
+    (start..=start.saturating_add(attempts))
+        .find(|port| TcpListener::bind((host, *port)).is_ok())
+        .ok_or_else(|| {
+            format!(
+                "사용 가능한 클라이언트 RPC TCP 포트를 찾지 못했습니다({start}~{}).",
+                start.saturating_add(attempts)
+            )
+        })
 }
 
 #[derive(Debug, Deserialize)]
