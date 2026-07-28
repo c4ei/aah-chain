@@ -28,10 +28,7 @@ impl FinalityStore {
         file.sync_data().map_err(|error| error.to_string())
     }
 
-    pub fn load(
-        &self,
-        validators: &[Validator],
-    ) -> Result<Vec<FinalityCertificate>, String> {
+    pub fn load(&self, validators: &[Validator]) -> Result<Vec<FinalityCertificate>, String> {
         if !self.path.exists() {
             return Ok(Vec::new());
         }

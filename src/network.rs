@@ -1,13 +1,13 @@
-use crate::consensus::{
-    ConsensusMessage, DoubleVoteEvidence, FinalityCertificate, SignedProposal,
-};
+use crate::consensus::{ConsensusMessage, DoubleVoteEvidence, FinalityCertificate, SignedProposal};
 use crate::model::{Block, Transaction};
 use crate::peer_guard::{PeerDecision, PeerGuard};
 use crate::snapshot_sync::SyncTip;
 use futures::StreamExt;
 use libp2p::core::ConnectedPoint;
 use libp2p::{
-    Multiaddr, PeerId, SwarmBuilder, gossipsub, identify, identity::Keypair, kad, mdns,
+    Multiaddr, PeerId, SwarmBuilder, gossipsub, identify,
+    identity::Keypair,
+    kad, mdns,
     multiaddr::Protocol,
     swarm::{ConnectionId, NetworkBehaviour, SwarmEvent},
 };
@@ -75,7 +75,9 @@ pub enum NetworkCommand {
     PublishConsensus(ConsensusMessage),
     PublishProposal(SignedProposal),
     PublishEvidence(DoubleVoteEvidence),
-    RequestSync { from_height: u64 },
+    RequestSync {
+        from_height: u64,
+    },
     RespondSync {
         requester: String,
         tip: SyncTip,
@@ -191,7 +193,10 @@ impl fmt::Display for NetworkEvent {
                     .unwrap_or_else(|| "확인 불가".into())
             ),
             Self::BlockReceived { source, block } => {
-                write!(formatter, "[P2P 블록 수신] PeerId: {source}, 블록: {block:?}")
+                write!(
+                    formatter,
+                    "[P2P 블록 수신] PeerId: {source}, 블록: {block:?}"
+                )
             }
             Self::TransactionReceived {
                 source,
@@ -202,7 +207,10 @@ impl fmt::Display for NetworkEvent {
                 transaction.id()
             ),
             Self::ConsensusReceived { source, message } => {
-                write!(formatter, "[P2P 합의 수신] PeerId: {source}, 메시지: {message:?}")
+                write!(
+                    formatter,
+                    "[P2P 합의 수신] PeerId: {source}, 메시지: {message:?}"
+                )
             }
             Self::ProposalReceived { source, proposal } => write!(
                 formatter,
@@ -460,9 +468,9 @@ async fn dial_address(
     let resolved_addresses = resolve_dns4_addresses(&address).await?;
     for resolved_address in resolved_addresses {
         crate::log_info!("[P2P 접속 시도] {address} -> {resolved_address}");
-        swarm.dial(resolved_address).map_err(|error| {
-            format!("[P2P 접속 시작 실패] 주소: {address}, 오류: {error}")
-        })?;
+        swarm
+            .dial(resolved_address)
+            .map_err(|error| format!("[P2P 접속 시작 실패] 주소: {address}, 오류: {error}"))?;
     }
     Ok(())
 }

@@ -1,5 +1,5 @@
 use crate::model::Block;
-use crate::wallet::{verify_signature, Wallet};
+use crate::wallet::{Wallet, verify_signature};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 
@@ -272,7 +272,13 @@ impl ConsensusMessage {
         validator: &Wallet,
         block_hash: impl Into<String>,
     ) -> Self {
-        Self::signed(height, round, validator, VoteType::Prevote, block_hash.into())
+        Self::signed(
+            height,
+            round,
+            validator,
+            VoteType::Prevote,
+            block_hash.into(),
+        )
     }
 
     /// 검증자 개인키로 서명된 precommit을 생성합니다.
@@ -282,7 +288,13 @@ impl ConsensusMessage {
         validator: &Wallet,
         block_hash: impl Into<String>,
     ) -> Self {
-        Self::signed(height, round, validator, VoteType::Precommit, block_hash.into())
+        Self::signed(
+            height,
+            round,
+            validator,
+            VoteType::Precommit,
+            block_hash.into(),
+        )
     }
 
     pub fn bytes_to_sign(
@@ -449,7 +461,10 @@ impl BftConsensus {
             return Err("현재 단계에서는 블록을 제안할 수 없습니다.".into());
         }
         if proposer != self.expected_proposer() {
-            return Err(format!("이번 라운드의 제안자는 {}입니다.", self.expected_proposer()));
+            return Err(format!(
+                "이번 라운드의 제안자는 {}입니다.",
+                self.expected_proposer()
+            ));
         }
         if block_hash.is_empty() {
             return Err("빈 블록 해시는 제안할 수 없습니다.".into());
@@ -472,7 +487,8 @@ impl BftConsensus {
             && locked_value != proposal.block.hash
         {
             let unlock_allowed = proposal.valid_round.is_some_and(|valid_round| {
-                self.locked_round.is_some_and(|locked_round| valid_round >= locked_round)
+                self.locked_round
+                    .is_some_and(|locked_round| valid_round >= locked_round)
                     && self.valid_round == Some(valid_round)
                     && self.valid_value.as_deref() == Some(proposal.block.hash.as_str())
             });
@@ -509,9 +525,11 @@ impl BftConsensus {
         if let Some(previous_hash) = self.vote_history.get(&history_key) {
             if previous_hash != &message.block_hash {
                 if let Some(first) = self.vote_messages.get(&history_key)
-                    && let Ok(evidence) =
-                        DoubleVoteEvidence::new(first.clone(), message.clone())
-                    && !self.evidence.iter().any(|known| known.id() == evidence.id())
+                    && let Ok(evidence) = DoubleVoteEvidence::new(first.clone(), message.clone())
+                    && !self
+                        .evidence
+                        .iter()
+                        .any(|known| known.id() == evidence.id())
                 {
                     self.evidence.push(evidence);
                 }
@@ -527,7 +545,10 @@ impl BftConsensus {
         }
 
         let key = (message.vote_type, message.block_hash.clone());
-        self.votes.entry(key.clone()).or_default().insert(message.validator_id);
+        self.votes
+            .entry(key.clone())
+            .or_default()
+            .insert(message.validator_id);
         if self.has_quorum(&key) && self.phase != ConsensusPhase::Finalized {
             match message.vote_type {
                 VoteType::Prevote if self.phase == ConsensusPhase::Prevote => {
@@ -568,9 +589,7 @@ impl BftConsensus {
     }
 
     pub fn locked_value(&self) -> Option<(&str, u32)> {
-        self.locked_value
-            .as_deref()
-            .zip(self.locked_round)
+        self.locked_value.as_deref().zip(self.locked_round)
     }
 
     pub fn valid_value(&self) -> Option<(&str, u32)> {

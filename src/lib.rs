@@ -1,16 +1,16 @@
 pub mod account;
 pub mod archive;
 pub mod chain;
+pub mod checkpoint;
 pub mod consensus;
 pub mod consensus_runtime;
 pub mod consensus_wal;
 pub mod embedded_db;
 pub mod evidence_store;
-pub mod checkpoint;
-pub mod genesis;
 pub mod finality_store;
-pub mod logger;
+pub mod genesis;
 pub mod keystore;
+pub mod logger;
 pub mod mempool;
 pub mod metrics;
 pub mod model;
@@ -19,11 +19,11 @@ pub mod node_key;
 pub mod peer_guard;
 pub mod raw_transaction;
 pub mod rpc;
-pub mod storage;
 pub mod signer;
-pub mod snapshot_sync;
 pub mod snapshot_scheduler;
+pub mod snapshot_sync;
 pub mod state_store;
+pub mod storage;
 pub mod upgrade;
 pub mod wallet;
 
@@ -35,9 +35,9 @@ pub use consensus::{
     SignedProposal, Validator,
 };
 pub use consensus_runtime::{ConsensusRuntime, ConsensusTimeouts};
+pub use consensus_wal::ConsensusWal;
 pub use embedded_db::EmbeddedDb;
 pub use evidence_store::EvidenceStore;
-pub use consensus_wal::ConsensusWal;
 pub use finality_store::FinalityStore;
 pub use genesis::GenesisConfig;
 pub use keystore::Keystore;
@@ -48,10 +48,8 @@ pub use network::{NetworkCommand, NetworkConfig, NetworkEvent, P2pNode};
 pub use peer_guard::{PeerDecision, PeerGuard};
 pub use rpc::{RpcConfig, RpcNodeHandle, RpcServer};
 pub use signer::{ExternalSigner, ValidatorSigner};
-pub use snapshot_sync::{
-    SnapshotChunk, SnapshotDownload, SnapshotManifest, SyncTip, TipQuorum,
-};
 pub use snapshot_scheduler::{ChunkAssignment, SnapshotScheduler};
+pub use snapshot_sync::{SnapshotChunk, SnapshotDownload, SnapshotManifest, SyncTip, TipQuorum};
 pub use state_store::{CanonicalState, StateStore};
 pub use upgrade::{ProtocolUpgrade, UpgradeSchedule};
 pub use wallet::Wallet;
@@ -67,8 +65,11 @@ mod tests {
         let producer = Wallet::from_seed([3; 32]);
         let mut chain = Blockchain::new(vec![(alice.address(), 1_000)]);
         let mut pool = Mempool::default();
-        pool.add(alice.sign_transfer(bob.address(), 250, 3, 0)).unwrap();
-        chain.add_block(pool.drain(100), producer.address()).unwrap();
+        pool.add(alice.sign_transfer(bob.address(), 250, 3, 0))
+            .unwrap();
+        chain
+            .add_block(pool.drain(100), producer.address())
+            .unwrap();
 
         assert_eq!(chain.balance_of(&alice.address()), 747);
         assert_eq!(chain.balance_of(&bob.address()), 250);
@@ -94,7 +95,10 @@ mod tests {
         let initial = vec![(alice.address(), 1_000)];
         let mut sender = Blockchain::new(initial.clone());
         let tx = alice.sign_transfer(bob.address(), 100, 1, 0);
-        let block = sender.add_block(vec![tx], validator.address()).unwrap().clone();
+        let block = sender
+            .add_block(vec![tx], validator.address())
+            .unwrap()
+            .clone();
 
         let mut receiver = Blockchain::new(initial);
         receiver.apply_block(block.clone()).unwrap();
@@ -115,22 +119,12 @@ mod tests {
         bft.propose(&proposer, "block-hash").unwrap();
 
         for key in keys.iter().take(3) {
-            bft.handle(ConsensusMessage::prevote(
-                5,
-                0,
-                key,
-                "block-hash",
-            ))
-            .unwrap();
+            bft.handle(ConsensusMessage::prevote(5, 0, key, "block-hash"))
+                .unwrap();
         }
         for key in keys.iter().take(3) {
-            bft.handle(ConsensusMessage::precommit(
-                5,
-                0,
-                key,
-                "block-hash",
-            ))
-            .unwrap();
+            bft.handle(ConsensusMessage::precommit(5, 0, key, "block-hash"))
+                .unwrap();
         }
 
         assert_eq!(bft.finalized_hash(), Some("block-hash"));

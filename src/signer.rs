@@ -1,4 +1,4 @@
-use crate::wallet::{verify_signature, Wallet};
+use crate::wallet::{Wallet, verify_signature};
 use serde::{Deserialize, Serialize};
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -26,10 +26,17 @@ impl ExternalSigner {
     pub fn new(program: impl AsRef<Path>, public_key: impl Into<String>) -> Result<Self, String> {
         let program = program.as_ref().to_path_buf();
         if !program.exists() {
-            return Err(format!("외부 signer 프로그램이 없습니다: {}", program.display()));
+            return Err(format!(
+                "외부 signer 프로그램이 없습니다: {}",
+                program.display()
+            ));
         }
         let public_key = public_key.into();
-        if hex::decode(&public_key).map(|bytes| bytes.len()).unwrap_or_default() != 32 {
+        if hex::decode(&public_key)
+            .map(|bytes| bytes.len())
+            .unwrap_or_default()
+            != 32
+        {
             return Err("외부 signer 공개키는 32바이트 Ed25519 hex여야 합니다.".into());
         }
         Ok(Self {
@@ -48,10 +55,16 @@ impl ExternalSigner {
         minimum_interval: Duration,
     ) -> Result<Self, String> {
         if programs.is_empty() || programs.iter().any(|program| !program.exists()) {
-            return Err("외부 signer 프로그램을 하나 이상 지정해야 하며 모두 존재해야 합니다.".into());
+            return Err(
+                "외부 signer 프로그램을 하나 이상 지정해야 하며 모두 존재해야 합니다.".into(),
+            );
         }
         let public_key = public_key.into();
-        if hex::decode(&public_key).map(|bytes| bytes.len()).unwrap_or_default() != 32 {
+        if hex::decode(&public_key)
+            .map(|bytes| bytes.len())
+            .unwrap_or_default()
+            != 32
+        {
             return Err("외부 signer 공개키는 32바이트 Ed25519 hex여야 합니다.".into());
         }
         Ok(Self {
@@ -97,7 +110,12 @@ impl ExternalSigner {
         Err(format!("외부 signer 전체 실패: {}", failures.join("; ")))
     }
 
-    fn try_program(&self, program: &Path, request: &[u8], payload: &[u8]) -> Result<String, String> {
+    fn try_program(
+        &self,
+        program: &Path,
+        request: &[u8],
+        payload: &[u8],
+    ) -> Result<String, String> {
         let mut child = Command::new(program)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -112,7 +130,11 @@ impl ExternalSigner {
             .map_err(|error| error.to_string())?;
         let started = Instant::now();
         loop {
-            if child.try_wait().map_err(|error| error.to_string())?.is_some() {
+            if child
+                .try_wait()
+                .map_err(|error| error.to_string())?
+                .is_some()
+            {
                 break;
             }
             if started.elapsed() >= self.timeout {
@@ -122,7 +144,9 @@ impl ExternalSigner {
             }
             thread::sleep(Duration::from_millis(5));
         }
-        let output = child.wait_with_output().map_err(|error| error.to_string())?;
+        let output = child
+            .wait_with_output()
+            .map_err(|error| error.to_string())?;
         if !output.status.success() {
             return Err(format!(
                 "외부 signer 거부: {}",

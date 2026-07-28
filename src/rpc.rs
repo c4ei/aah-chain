@@ -1,7 +1,6 @@
 use crate::model::{Block, Transaction};
 use crate::{
-    ArchiveStore, Blockchain, GenesisConfig, Keystore, Mempool, StateStore,
-    account::AccountWallet,
+    ArchiveStore, Blockchain, GenesisConfig, Keystore, Mempool, StateStore, account::AccountWallet,
 };
 use axum::{Json, Router, routing::post};
 use serde_json::{Value, json};
@@ -174,8 +173,8 @@ impl RpcServer {
             .expect("활성 블록 저장소를 만들 수 있어야 합니다.");
         let keystore = Keystore::new(config.data_dir.join("keystore"))
             .expect("keystore 디렉터리를 만들 수 있어야 합니다.");
-        let state_store = StateStore::new(&config.data_dir)
-            .expect("상태 저장소를 만들 수 있어야 합니다.");
+        let state_store =
+            StateStore::new(&config.data_dir).expect("상태 저장소를 만들 수 있어야 합니다.");
         let mut chain = match config.genesis.as_ref() {
             Some(genesis) => Blockchain::from_genesis(genesis)
                 .expect("RpcServer에는 검증된 제네시스 설정을 전달해야 합니다."),
@@ -198,7 +197,11 @@ impl RpcServer {
                 state.nonces,
             )
             .expect("embedded DB 상태를 복원할 수 있어야 합니다.");
-            assert_eq!(chain.state_hash(), state.state_root, "embedded DB state root 불일치");
+            assert_eq!(
+                chain.state_hash(),
+                state.state_root,
+                "embedded DB state root 불일치"
+            );
         } else if let Some(snapshot) = archive
             .load_latest_snapshot()
             .expect("상태 체크포인트를 읽을 수 있어야 합니다.")
@@ -464,9 +467,7 @@ fn dispatch(
         "eth_getCode" => Ok(json!("0x")),
         "eth_call" => Ok(json!("0x")),
         "eth_getLogs" => Ok(json!([])),
-        "eth_getUncleCountByBlockHash" | "eth_getUncleCountByBlockNumber" => {
-            Ok(json!("0x0"))
-        }
+        "eth_getUncleCountByBlockHash" | "eth_getUncleCountByBlockNumber" => Ok(json!("0x0")),
         "eth_getBlockByNumber" => {
             let selector = string_param(params, 0)?;
             let full = params.get(1).and_then(Value::as_bool).unwrap_or(false);
@@ -806,9 +807,17 @@ mod tests {
         let tx = json!({"from": faucet, "to": receiver, "value": "0x64", "gasPrice": "0x1"});
         assert!(dispatch(&shared, "eth_sendTransaction", &[tx]).is_ok());
         assert_eq!(shared.read().unwrap().pool.len(), 1);
-        assert_eq!(dispatch(&shared, "eth_blockNumber", &[]).unwrap(), json!("0x0"));
         assert_eq!(
-            dispatch(&shared, "eth_getBalance", &[json!(receiver), json!("latest")]).unwrap(),
+            dispatch(&shared, "eth_blockNumber", &[]).unwrap(),
+            json!("0x0")
+        );
+        assert_eq!(
+            dispatch(
+                &shared,
+                "eth_getBalance",
+                &[json!(receiver), json!("latest")]
+            )
+            .unwrap(),
             json!("0x0")
         );
     }

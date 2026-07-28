@@ -102,10 +102,7 @@ impl ConsensusRuntime {
         if self.validator.address() != self.consensus.expected_proposer() {
             return Err("이 노드는 현재 라운드 제안자가 아닙니다.".into());
         }
-        let (block, valid_round) = match (
-            self.valid_block.as_ref(),
-            self.consensus.valid_value(),
-        ) {
+        let (block, valid_round) = match (self.valid_block.as_ref(), self.consensus.valid_value()) {
             (Some(valid_block), Some((valid_hash, valid_round)))
                 if valid_block.hash == valid_hash =>
             {

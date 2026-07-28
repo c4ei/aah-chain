@@ -11,10 +11,12 @@ fn embedded_state_is_primary_restart_source() {
     let restored = store.load().unwrap().unwrap();
     assert_eq!(restored.chain_id, 21_004);
     assert_eq!(restored.state_root, chain.state_hash());
-    assert!(EmbeddedDb::open(&root)
-        .unwrap()
-        .get("canonical/current")
-        .is_some());
+    assert!(
+        EmbeddedDb::open(&root)
+            .unwrap()
+            .get("canonical/current")
+            .is_some()
+    );
     let _ = std::fs::remove_dir_all(root);
 }
 

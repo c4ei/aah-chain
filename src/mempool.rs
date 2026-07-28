@@ -49,10 +49,14 @@ impl Mempool {
             let previous = &self.transactions[position];
             let minimum_fee = previous.fee.saturating_add((previous.fee / 10).max(1));
             if tx.fee < minimum_fee {
-                return Err("같은 nonce 거래 교체에는 기존보다 최소 10% 높은 수수료가 필요합니다.".into());
+                return Err(
+                    "같은 nonce 거래 교체에는 기존보다 최소 10% 높은 수수료가 필요합니다.".into(),
+                );
             }
             self.total_bytes = self.total_bytes.saturating_sub(
-                serde_json::to_vec(previous).map(|bytes| bytes.len()).unwrap_or(0),
+                serde_json::to_vec(previous)
+                    .map(|bytes| bytes.len())
+                    .unwrap_or(0),
             );
             self.ids.remove(&previous_id);
             self.transactions.remove(position);

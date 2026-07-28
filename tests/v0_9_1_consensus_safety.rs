@@ -1,13 +1,15 @@
+use ieum_chain::model::Block;
 use ieum_chain::{
     BftConsensus, ConsensusMessage, DoubleVoteEvidence, EvidenceStore, SignedProposal, Validator,
     Wallet,
 };
-use ieum_chain::model::Block;
 use std::fs;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 fn validators() -> (Vec<Wallet>, Vec<Validator>) {
-    let wallets: Vec<_> = (1_u8..=4).map(|index| Wallet::from_seed([index; 32])).collect();
+    let wallets: Vec<_> = (1_u8..=4)
+        .map(|index| Wallet::from_seed([index; 32]))
+        .collect();
     let validators = wallets
         .iter()
         .map(|wallet| Validator::new(wallet.address(), 100))

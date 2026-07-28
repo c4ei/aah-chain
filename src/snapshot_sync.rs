@@ -46,16 +46,13 @@ pub struct SnapshotDownload {
 impl SnapshotDownload {
     pub fn open(data_dir: impl AsRef<Path>, manifest: SnapshotManifest) -> Result<Self, String> {
         manifest.verify()?;
-        let root = data_dir
-            .as_ref()
-            .join("sync")
-            .join(&manifest.snapshot_id);
+        let root = data_dir.as_ref().join("sync").join(&manifest.snapshot_id);
         fs::create_dir_all(root.join("chunks")).map_err(|error| error.to_string())?;
         let progress_path = root.join("resume.json");
         let progress = match fs::read(&progress_path) {
             Ok(bytes) => {
-                let progress: ResumeProgress =
-                    serde_json::from_slice(&bytes).map_err(|_| "snapshot 재개 파일이 손상되었습니다.")?;
+                let progress: ResumeProgress = serde_json::from_slice(&bytes)
+                    .map_err(|_| "snapshot 재개 파일이 손상되었습니다.")?;
                 if progress.manifest != manifest {
                     return Err("재개 중인 snapshot manifest가 피어 응답과 다릅니다.".into());
                 }
@@ -115,7 +112,8 @@ impl SnapshotDownload {
         if hash(&compressed) != self.progress.manifest.snapshot_id {
             return Err("완성된 snapshot ID가 manifest와 다릅니다.".into());
         }
-        let bytes = zstd::stream::decode_all(compressed.as_slice()).map_err(|error| error.to_string())?;
+        let bytes =
+            zstd::stream::decode_all(compressed.as_slice()).map_err(|error| error.to_string())?;
         let snapshot: StateSnapshot =
             serde_json::from_slice(&bytes).map_err(|error| error.to_string())?;
         if snapshot.height != self.progress.manifest.tip.height
@@ -140,12 +138,16 @@ impl SnapshotDownload {
 }
 
 impl SnapshotManifest {
-    pub fn build(snapshot: &StateSnapshot, chunk_bytes: usize) -> Result<(Self, Vec<SnapshotChunk>), String> {
+    pub fn build(
+        snapshot: &StateSnapshot,
+        chunk_bytes: usize,
+    ) -> Result<(Self, Vec<SnapshotChunk>), String> {
         if chunk_bytes == 0 {
             return Err("snapshot chunk 크기는 0보다 커야 합니다.".into());
         }
         let plain = serde_json::to_vec(snapshot).map_err(|error| error.to_string())?;
-        let compressed = zstd::stream::encode_all(plain.as_slice(), 3).map_err(|error| error.to_string())?;
+        let compressed =
+            zstd::stream::encode_all(plain.as_slice(), 3).map_err(|error| error.to_string())?;
         let snapshot_id = hash(&compressed);
         let chunks = compressed
             .chunks(chunk_bytes)
@@ -203,7 +205,11 @@ impl TipQuorum {
         let mut counts: BTreeMap<(u64, String, String), usize> = BTreeMap::new();
         for value in self.votes.values() {
             *counts
-                .entry((value.height, value.block_hash.clone(), value.state_root.clone()))
+                .entry((
+                    value.height,
+                    value.block_hash.clone(),
+                    value.state_root.clone(),
+                ))
                 .or_default() += 1;
         }
         counts

@@ -86,12 +86,7 @@ fn four_nodes_finalize_then_store_and_new_node_syncs() {
     let (mut fresh, _) = setup();
     let certificates = nodes[0].certificates_from(1);
     assert_eq!(certificates.len(), 1);
-    assert_eq!(
-        fresh[0]
-            .apply_sync_certificates(certificates)
-            .unwrap(),
-        1
-    );
+    assert_eq!(fresh[0].apply_sync_certificates(certificates).unwrap(), 1);
     assert_eq!(fresh[0].chain.blocks, nodes[0].chain.blocks);
 }
 
@@ -110,9 +105,7 @@ fn new_node_rejects_block_without_three_precommits() {
         precommits: wallets
             .iter()
             .take(2)
-            .map(|wallet| {
-                ieum_chain::ConsensusMessage::precommit(1, 0, wallet, block.hash.clone())
-            })
+            .map(|wallet| ieum_chain::ConsensusMessage::precommit(1, 0, wallet, block.hash.clone()))
             .collect(),
         block,
     };

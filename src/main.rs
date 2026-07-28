@@ -1,9 +1,9 @@
 use clap::{Args as ClapArgs, Parser, Subcommand};
 use ieum_chain::{
-    ConsensusRuntime, ConsensusTimeouts, EvidenceStore, FinalityStore, NetworkCommand,
-    ExternalSigner, NetworkConfig, NetworkEvent, P2pNode, RpcConfig, RpcServer, SyncTip,
-    TipQuorum, UpgradeSchedule, Validator, ValidatorSigner, Wallet,
-    log_error, log_info, logger::init_server_log, node_key::load_or_create_node_key,
+    ConsensusRuntime, ConsensusTimeouts, EvidenceStore, ExternalSigner, FinalityStore,
+    NetworkCommand, NetworkConfig, NetworkEvent, P2pNode, RpcConfig, RpcServer, SyncTip, TipQuorum,
+    UpgradeSchedule, Validator, ValidatorSigner, Wallet, log_error, log_info,
+    logger::init_server_log, node_key::load_or_create_node_key,
 };
 use libp2p::Multiaddr;
 use serde::Deserialize;
@@ -145,8 +145,10 @@ async fn main() -> Result<(), String> {
             if client.node.rpc_data_dir == PathBuf::from("data/ledger") {
                 client.node.rpc_data_dir = PathBuf::from("data/client-ledger");
             }
-            let peers =
-                load_bootstrap_peers(&client.bootstrap_config, std::mem::take(&mut client.node.peer))?;
+            let peers = load_bootstrap_peers(
+                &client.bootstrap_config,
+                std::mem::take(&mut client.node.peer),
+            )?;
             ("일반 PC", client.node, peers, true)
         }
         None => {
@@ -169,8 +171,7 @@ async fn main() -> Result<(), String> {
                 sync_quorum_peers: 2,
                 peer: Vec::new(),
             };
-            let peers =
-                load_bootstrap_peers(Path::new(DEFAULT_BOOTSTRAP_CONFIG), Vec::new())?;
+            let peers = load_bootstrap_peers(Path::new(DEFAULT_BOOTSTRAP_CONFIG), Vec::new())?;
             ("일반 PC", node, peers, true)
         }
     };
@@ -672,24 +673,25 @@ fn load_bootstrap_peers(
     let mut peers = if path.exists() {
         let text = fs::read_to_string(path)
             .map_err(|error| format!("부트스트랩 설정 읽기 실패({}): {error}", path.display()))?;
-        let configured: BootstrapConfig = serde_json::from_str(&text).map_err(|error| {
-            format!("부트스트랩 설정 형식 오류({}): {error}", path.display())
-        })?;
+        let configured: BootstrapConfig = serde_json::from_str(&text)
+            .map_err(|error| format!("부트스트랩 설정 형식 오류({}): {error}", path.display()))?;
         let addresses = match configured {
             BootstrapConfig::Addresses(peers) | BootstrapConfig::Object { peers } => peers,
         };
         addresses
             .into_iter()
             .map(|address| {
-                address.parse().map_err(|error| {
-                    format!("부트스트랩 주소 형식 오류({address}): {error}")
-                })
+                address
+                    .parse()
+                    .map_err(|error| format!("부트스트랩 주소 형식 오류({address}): {error}"))
             })
             .collect::<Result<Vec<_>, _>>()?
     } else if path == Path::new(DEFAULT_BOOTSTRAP_CONFIG) {
-        vec![DEFAULT_BOOTSTRAP_PEER
-            .parse()
-            .map_err(|error| format!("내장 부트스트랩 주소 오류: {error}"))?]
+        vec![
+            DEFAULT_BOOTSTRAP_PEER
+                .parse()
+                .map_err(|error| format!("내장 부트스트랩 주소 오류: {error}"))?,
+        ]
     } else if command_line_peers.is_empty() {
         return Err(format!(
             "부트스트랩 설정 파일이 없습니다: {}",

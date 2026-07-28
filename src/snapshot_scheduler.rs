@@ -35,7 +35,9 @@ impl SnapshotScheduler {
         max_peer_retries: u32,
     ) -> Result<Self, String> {
         if peers.len() < 2 || max_in_flight == 0 || max_peer_retries == 0 {
-            return Err("snapshot 병렬 다운로드는 피어 2개 이상과 양수 제한값이 필요합니다.".into());
+            return Err(
+                "snapshot 병렬 다운로드는 피어 2개 이상과 양수 제한값이 필요합니다.".into(),
+            );
         }
         Ok(Self {
             pending: missing.into(),

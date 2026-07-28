@@ -37,12 +37,27 @@ impl NodeMetrics {
 
     pub fn encode_prometheus(&self) -> String {
         [
-            ("ieum_finalized_height", self.finalized_height.load(Ordering::Relaxed)),
+            (
+                "ieum_finalized_height",
+                self.finalized_height.load(Ordering::Relaxed),
+            ),
             ("ieum_peer_count", self.peers.load(Ordering::Relaxed)),
-            ("ieum_sync_target_height", self.sync_target.load(Ordering::Relaxed)),
-            ("ieum_consensus_round", self.consensus_round.load(Ordering::Relaxed)),
-            ("ieum_signer_failures_total", self.signer_failures.load(Ordering::Relaxed)),
-            ("ieum_snapshot_retries_total", self.snapshot_retries.load(Ordering::Relaxed)),
+            (
+                "ieum_sync_target_height",
+                self.sync_target.load(Ordering::Relaxed),
+            ),
+            (
+                "ieum_consensus_round",
+                self.consensus_round.load(Ordering::Relaxed),
+            ),
+            (
+                "ieum_signer_failures_total",
+                self.signer_failures.load(Ordering::Relaxed),
+            ),
+            (
+                "ieum_snapshot_retries_total",
+                self.snapshot_retries.load(Ordering::Relaxed),
+            ),
         ]
         .into_iter()
         .map(|(name, value)| format!("# TYPE {name} gauge\n{name} {value}\n"))

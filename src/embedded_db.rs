@@ -34,8 +34,8 @@ impl EmbeddedDb {
         let source = if wal_path.exists() { &wal_path } else { &path };
         let image = match fs::read(source) {
             Ok(bytes) => {
-                let image: DatabaseImage =
-                    serde_json::from_slice(&bytes).map_err(|error| format!("embedded DB 손상: {error}"))?;
+                let image: DatabaseImage = serde_json::from_slice(&bytes)
+                    .map_err(|error| format!("embedded DB 손상: {error}"))?;
                 if image.schema_version != SCHEMA_VERSION {
                     return Err("지원하지 않는 embedded DB schema입니다.".into());
                 }
@@ -48,7 +48,11 @@ impl EmbeddedDb {
             },
             Err(error) => return Err(error.to_string()),
         };
-        let mut db = Self { path, wal_path, image };
+        let mut db = Self {
+            path,
+            wal_path,
+            image,
+        };
         if db.wal_path.exists() {
             db.checkpoint()?;
         }
