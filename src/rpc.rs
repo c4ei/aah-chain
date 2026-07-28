@@ -788,10 +788,25 @@ fn write_state(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static TEST_DATA_DIR_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
+    fn test_rpc_config(test_name: &str) -> RpcConfig {
+        let sequence = TEST_DATA_DIR_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+        RpcConfig {
+            data_dir: std::env::temp_dir().join(format!(
+                "ieum-rpc-{test_name}-{}-{sequence}",
+                std::process::id()
+            )),
+            ..RpcConfig::default()
+        }
+    }
 
     #[test]
     fn submitted_transaction_waits_for_bft_finality() {
-        let shared = RpcServer::new(RpcConfig::default()).state;
+        let shared =
+            RpcServer::new(test_rpc_config("submitted-transaction-waits-for-finality")).state;
         let accounts = dispatch(&shared, "eth_accounts", &[])
             .unwrap()
             .as_array()
@@ -824,14 +839,14 @@ mod tests {
 
     #[test]
     fn malformed_raw_ethereum_transaction_is_rejected() {
-        let shared = RpcServer::new(RpcConfig::default()).state;
+        let shared = RpcServer::new(test_rpc_config("malformed-raw-transaction")).state;
         let error = dispatch(&shared, "eth_sendRawTransaction", &[json!("0x00")]).unwrap_err();
         assert_eq!(error.0, -32000);
     }
 
     #[test]
     fn geth_private_key_import_returns_standard_address() {
-        let shared = RpcServer::new(RpcConfig::default()).state;
+        let shared = RpcServer::new(test_rpc_config("geth-private-key-import")).state;
         let private_key = "0000000000000000000000000000000000000000000000000000000000000001";
         let address = dispatch(
             &shared,
@@ -844,7 +859,7 @@ mod tests {
 
     #[test]
     fn standard_mnemonic_import_returns_metamask_address() {
-        let shared = RpcServer::new(RpcConfig::default()).state;
+        let shared = RpcServer::new(test_rpc_config("standard-mnemonic-import")).state;
         let words = "test test test test test test test test test test test junk";
         let address = dispatch(
             &shared,
