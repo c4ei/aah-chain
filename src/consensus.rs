@@ -77,6 +77,36 @@ impl SignedProposal {
         }
     }
 
+    pub fn bytes_to_sign(
+        height: u64,
+        round: u32,
+        proposer_id: &str,
+        block_hash: &str,
+        valid_round: Option<u32>,
+    ) -> Vec<u8> {
+        Self::unsigned_bytes(height, round, proposer_id, block_hash, valid_round)
+    }
+
+    pub fn from_signature(
+        height: u64,
+        round: u32,
+        proposer_id: String,
+        block: Block,
+        valid_round: Option<u32>,
+        signature: String,
+    ) -> Result<Self, String> {
+        let proposal = Self {
+            height,
+            round,
+            proposer_id,
+            valid_round,
+            block,
+            signature,
+        };
+        proposal.verify()?;
+        Ok(proposal)
+    }
+
     fn unsigned_bytes(
         height: u64,
         round: u32,
@@ -253,6 +283,36 @@ impl ConsensusMessage {
         block_hash: impl Into<String>,
     ) -> Self {
         Self::signed(height, round, validator, VoteType::Precommit, block_hash.into())
+    }
+
+    pub fn bytes_to_sign(
+        height: u64,
+        round: u32,
+        validator_id: &str,
+        vote_type: VoteType,
+        block_hash: &str,
+    ) -> Vec<u8> {
+        Self::unsigned_bytes(height, round, validator_id, vote_type, block_hash)
+    }
+
+    pub fn from_signature(
+        height: u64,
+        round: u32,
+        validator_id: String,
+        vote_type: VoteType,
+        block_hash: String,
+        signature: String,
+    ) -> Result<Self, String> {
+        let message = Self {
+            height,
+            round,
+            validator_id,
+            vote_type,
+            block_hash,
+            signature,
+        };
+        message.verify()?;
+        Ok(message)
     }
 
     fn signed(

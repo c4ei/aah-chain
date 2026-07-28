@@ -184,7 +184,22 @@ impl RpcServer {
                 vec![(faucet.address(), 1_000_000_000_000_000_000)],
             ),
         };
-        if let Some(snapshot) = archive
+        if let Some(state) = state_store
+            .load()
+            .expect("embedded 상태 DB를 읽을 수 있어야 합니다.")
+        {
+            assert_eq!(state.chain_id, chain_id, "embedded DB chain ID 불일치");
+            chain = Blockchain::from_snapshot(
+                chain_id,
+                chain.genesis_commitment.clone(),
+                state.height,
+                state.block_hash,
+                state.balances,
+                state.nonces,
+            )
+            .expect("embedded DB 상태를 복원할 수 있어야 합니다.");
+            assert_eq!(chain.state_hash(), state.state_root, "embedded DB state root 불일치");
+        } else if let Some(snapshot) = archive
             .load_latest_snapshot()
             .expect("상태 체크포인트를 읽을 수 있어야 합니다.")
         {

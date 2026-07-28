@@ -4,6 +4,7 @@ pub mod chain;
 pub mod consensus;
 pub mod consensus_runtime;
 pub mod consensus_wal;
+pub mod embedded_db;
 pub mod evidence_store;
 pub mod checkpoint;
 pub mod genesis;
@@ -18,6 +19,8 @@ pub mod peer_guard;
 pub mod raw_transaction;
 pub mod rpc;
 pub mod storage;
+pub mod signer;
+pub mod snapshot_sync;
 pub mod state_store;
 pub mod upgrade;
 pub mod wallet;
@@ -30,19 +33,24 @@ pub use consensus::{
     SignedProposal, Validator,
 };
 pub use consensus_runtime::{ConsensusRuntime, ConsensusTimeouts};
+pub use embedded_db::EmbeddedDb;
 pub use evidence_store::EvidenceStore;
-pub use finality_store::FinalityStore;
 pub use consensus_wal::ConsensusWal;
+pub use finality_store::FinalityStore;
 pub use genesis::GenesisConfig;
-pub use mempool::Mempool;
 pub use keystore::Keystore;
+pub use mempool::Mempool;
 pub use model::{Block, Transaction};
 pub use network::{NetworkCommand, NetworkConfig, NetworkEvent, P2pNode};
 pub use peer_guard::{PeerDecision, PeerGuard};
 pub use rpc::{RpcConfig, RpcNodeHandle, RpcServer};
-pub use wallet::Wallet;
+pub use signer::{ExternalSigner, ValidatorSigner};
+pub use snapshot_sync::{
+    SnapshotChunk, SnapshotDownload, SnapshotManifest, SyncTip, TipQuorum,
+};
 pub use state_store::{CanonicalState, StateStore};
 pub use upgrade::{ProtocolUpgrade, UpgradeSchedule};
+pub use wallet::Wallet;
 
 #[cfg(test)]
 mod tests {

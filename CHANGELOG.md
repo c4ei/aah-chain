@@ -1,5 +1,13 @@
 # 변경 기록
 
+## 0.10.1 - 2026-07-28
+
+- snapshot chunk별 SHA-256 검증과 다운로드 재개 지점 영속화
+- 서로 다른 2~3개 피어의 height/block hash/state root quorum 검증
+- 원자적 embedded key-value DB와 canonical 상태 우선 복원
+- 로컬 키와 외부 signer/HSM adapter를 분리하는 검증자 서명 경계
+- 외부 signer 응답 서명을 공개키로 재검증
+
 ## 0.9.1 - 2026-07-28
 
 - Tendermint 계열 locked value / valid value 및 valid round 제안 규칙

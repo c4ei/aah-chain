@@ -19,15 +19,16 @@
 | v0.8.1 | 테스트넷 구현 | canonical 규칙, 상태 root·인덱스, keystore, mempool·운영 RPC |
 | v0.8.2 | 처리완료 | 컴파일 수정과 fmt·clippy·test·release build CI |
 | v0.9.1 | 테스트넷 구현 | locked/valid value, 단계별 timeout, 이중투표 증거, 실제 4프로세스 시험 |
+| v0.10.1 | 테스트넷 구현 | snapshot chunk 재개, 다중 피어 tip/state root quorum, embedded DB, 외부 signer |
 
 ## 현재 제한
 
 - 4노드 BFT와 P2P 실행 루프는 결합됐지만 실제 서로 다른 서버 4대의 장기 장애 시험이 필요합니다.
 - locked/valid value 규칙은 구현했지만 nil vote와 장기 장애·네트워크 분할 시험은 더 필요합니다.
-- 인증서 기반 증분 동기화는 구현됐지만 snapshot chunk, 다중 피어 교차 검증과 중단 위치 영속화는 아직 없습니다.
-- 영구 node key는 지원하지만 검증자 외부 signer/HSM은 아직 없습니다.
+- snapshot chunk 저장·재개 코어는 구현됐지만 P2P 병렬 chunk 요청과 peer별 재시도는 아직 없습니다.
+- 외부 signer 경계는 구현됐지만 제품별 PKCS#11/Vault/KMS adapter와 HA failover는 별도입니다.
 - IP 단위 연결 속도 제한, subnet diversity, ASN 다양성은 아직 없습니다.
-- 원자적 JSON 상태 저장은 큰 체인에 적합하지 않아 embedded DB 전환이 필요합니다.
+- embedded key-value backend는 작은 테스트넷용이며 메인넷 전 RocksDB/SQLite WAL급 backend가 필요합니다.
 
 ## 다음 단계
 
@@ -39,13 +40,21 @@
 - [완료 0.9.1] 외부 검증자 이중투표 증거 영속 저장·전파
 - [완료 0.9.1] 실제 4프로세스 QUIC 네트워크 통합 테스트
 
-## 0.10.1 권장 범위
+## 0.10.1 처리 범위
 
-- snapshot chunk와 다운로드 재개 지점 영속화
-- 최소 2~3개 피어의 tip·state root 교차 검증
-- embedded DB backend
-- 외부 signer/HSM
+- [완료] snapshot chunk와 다운로드 재개 지점 영속화
+- [완료] 최소 2~3개 피어의 tip·state root 교차 검증
+- [완료] 작은 테스트넷용 embedded DB backend
+- [완료] 외부 signer/HSM adapter 경계
 - 검증자 4대 Docker/프로세스 통합 테스트와 장기 장애 시험
+
+## 0.11.1 권장 범위
+
+- snapshot P2P 병렬 chunk 다운로드와 peer별 재시도
+- RocksDB 또는 SQLite WAL backend
+- nil vote/proposal과 round-change certificate
+- 외부 signer timeout·rate limit·HA failover
+- Prometheus metrics와 운영 대시보드
 
 ### Step 7: 안전한 체인 동기화
 

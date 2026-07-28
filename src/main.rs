@@ -1,7 +1,8 @@
 use clap::{Args as ClapArgs, Parser, Subcommand};
 use ieum_chain::{
     ConsensusRuntime, ConsensusTimeouts, EvidenceStore, FinalityStore, NetworkCommand,
-    NetworkConfig, NetworkEvent, P2pNode, RpcConfig, RpcServer, UpgradeSchedule, Validator, Wallet,
+    ExternalSigner, NetworkConfig, NetworkEvent, P2pNode, RpcConfig, RpcServer, SyncTip,
+    TipQuorum, UpgradeSchedule, Validator, ValidatorSigner, Wallet,
     log_error, log_info, logger::init_server_log, node_key::load_or_create_node_key,
 };
 use libp2p::Multiaddr;
@@ -75,6 +76,14 @@ struct NodeArgs {
     #[arg(long, default_value_t = false)]
     allow_insecure_test_keys: bool,
 
+    /// 개인키를 노드 밖에 두는 signer 실행 파일(HSM/Vault adapter)
+    #[arg(long, requires = "validator_public_key")]
+    validator_signer_command: Option<PathBuf>,
+
+    /// 외부 signer의 Ed25519 공개키 32바이트 hex
+    #[arg(long, requires = "validator_signer_command")]
+    validator_public_key: Option<String>,
+
     /// proposal 단계 제한 시간(ms)
     #[arg(long, default_value_t = 3_000)]
     propose_timeout_ms: u64,
@@ -86,6 +95,10 @@ struct NodeArgs {
     /// precommit 단계 제한 시간(ms)
     #[arg(long, default_value_t = 2_000)]
     precommit_timeout_ms: u64,
+
+    /// 동일 tip/state root 확인에 필요한 독립 피어 수(2~3)
+    #[arg(long, default_value_t = 2, value_parser = parse_sync_quorum_peers)]
+    sync_quorum_peers: usize,
 
     /// 서버/클라이언트가 시작할 때 접속할 추가 P2P 주소
     #[arg(long, help = "/dns4/node.ieum.aah.name/udp/7001/quic-v1/p2p/PeerId")]
@@ -100,6 +113,18 @@ struct ClientArgs {
     /// 자동으로 읽을 부트스트랩 설정 파일
     #[arg(long, default_value = DEFAULT_BOOTSTRAP_CONFIG)]
     bootstrap_config: PathBuf,
+}
+
+fn parse_sync_quorum_peers(value: &str) -> Result<usize, String> {
+    let peers = value
+        .parse::<usize>()
+        .map_err(|_| "sync quorum peers는 2 또는 3이어야 합니다".to_string())?;
+
+    if (2..=3).contains(&peers) {
+        Ok(peers)
+    } else {
+        Err("sync quorum peers는 2 또는 3이어야 합니다".to_string())
+    }
 }
 
 #[tokio::main]
@@ -136,9 +161,12 @@ async fn main() -> Result<(), String> {
                 validator_key: PathBuf::from("config/validator.key"),
                 validators_config: PathBuf::from("config/validators.example.json"),
                 allow_insecure_test_keys: false,
+                validator_signer_command: None,
+                validator_public_key: None,
                 propose_timeout_ms: 3_000,
                 prevote_timeout_ms: 2_000,
                 precommit_timeout_ms: 2_000,
+                sync_quorum_peers: 2,
                 peer: Vec::new(),
             };
             let peers =
@@ -180,14 +208,20 @@ async fn main() -> Result<(), String> {
     let rpc = rpc_server.node_handle();
     let mut rpc_task = tokio::spawn(rpc_server.run());
     let validators = load_validators(&args.validators_config)?;
-    let local_validator = if is_client {
-        Wallet::new()
+    let local_validator: ValidatorSigner = if is_client {
+        Wallet::new().into()
+    } else if let (Some(command), Some(public_key)) = (
+        args.validator_signer_command.as_ref(),
+        args.validator_public_key.as_ref(),
+    ) {
+        ExternalSigner::new(command, public_key.clone())?.into()
     } else {
         load_validator_wallet(
             &args.validator_key,
             args.validator_index,
             args.allow_insecure_test_keys,
         )?
+        .into()
     };
     if !is_client
         && !validators
@@ -202,7 +236,7 @@ async fn main() -> Result<(), String> {
         rpc.chain()?.tip_height().saturating_add(1),
         SUPPORTED_PROTOCOL_VERSION,
     )?;
-    let mut consensus = ConsensusRuntime::with_timeouts(
+    let mut consensus = ConsensusRuntime::with_signer(
         rpc.chain()?,
         validators.clone(),
         local_validator,
@@ -223,6 +257,7 @@ async fn main() -> Result<(), String> {
         log_info!("[BFT 인증서 복원] {imported}개");
     }
     let mut consensus_tick = tokio::time::interval(Duration::from_millis(500));
+    let mut sync_quorum = TipQuorum::new(args.sync_quorum_peers)?;
 
     log_info!("IEUM {mode} 노드 시작: {peer_id}");
     log_info!("영구 노드 키: {}", args.node_key.display());
@@ -342,12 +377,20 @@ async fn main() -> Result<(), String> {
                     Some(NetworkEvent::SyncRequested { requester, from_height, .. }) if !is_client => {
                         commands.send(NetworkCommand::RespondSync {
                             requester,
-                            highest_height: consensus.chain.tip_height(),
+                            tip: SyncTip {
+                                height: consensus.chain.tip_height(),
+                                block_hash: consensus.chain.tip_hash().to_string(),
+                                state_root: consensus.chain.state_hash(),
+                            },
                             certificates: consensus.certificates_from(from_height),
                         }).await.map_err(|e| e.to_string())?;
                     }
-                    Some(NetworkEvent::SyncReceived { highest_height, certificates, .. }) => {
-                        rpc.begin_sync(highest_height)?;
+                    Some(NetworkEvent::SyncReceived { source, tip, certificates }) => {
+                        let Some(agreed_tip) = sync_quorum.observe(source.to_string(), tip) else {
+                            log_info!("[동기화 교차검증] 두 번째 독립 피어 응답을 기다립니다.");
+                            continue;
+                        };
+                        rpc.begin_sync(agreed_tip.height)?;
                         let mut applied = 0;
                         for certificate in certificates {
                             let chain_before = consensus.chain.clone();
@@ -363,7 +406,17 @@ async fn main() -> Result<(), String> {
                             }
                         }
                         if applied > 0 {
+                            if consensus.chain.tip_height() == agreed_tip.height
+                                && (consensus.chain.tip_hash() != agreed_tip.block_hash
+                                    || consensus.chain.state_hash() != agreed_tip.state_root)
+                            {
+                                return Err("동기화 완료 상태가 피어 quorum의 tip/state root와 다릅니다.".into());
+                            }
                             log_info!("[동기화 완료] 확정 블록 {applied}개 적용, 높이 {}", consensus.chain.tip_height());
+                            commands.send(NetworkCommand::RequestSync {
+                                from_height: consensus.chain.tip_height() + 1,
+                            }).await.map_err(|e| e.to_string())?;
+                        } else if consensus.chain.tip_height() < agreed_tip.height {
                             commands.send(NetworkCommand::RequestSync {
                                 from_height: consensus.chain.tip_height() + 1,
                             }).await.map_err(|e| e.to_string())?;
@@ -397,6 +450,24 @@ async fn main() -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod cli_tests {
+    use super::parse_sync_quorum_peers;
+
+    #[test]
+    fn sync_quorum_peers_accepts_two_or_three() {
+        assert_eq!(parse_sync_quorum_peers("2"), Ok(2));
+        assert_eq!(parse_sync_quorum_peers("3"), Ok(3));
+    }
+
+    #[test]
+    fn sync_quorum_peers_rejects_values_outside_range() {
+        assert!(parse_sync_quorum_peers("1").is_err());
+        assert!(parse_sync_quorum_peers("4").is_err());
+        assert!(parse_sync_quorum_peers("invalid").is_err());
+    }
 }
 
 async fn persist_and_publish_evidence(

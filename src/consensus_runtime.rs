@@ -4,6 +4,7 @@ use crate::consensus::{
     SignedProposal, Validator, VoteType,
 };
 use crate::model::Block;
+use crate::signer::ValidatorSigner;
 use crate::wallet::Wallet;
 use std::time::{Duration, Instant};
 
@@ -37,7 +38,7 @@ impl ConsensusTimeouts {
 pub struct ConsensusRuntime {
     pub chain: Blockchain,
     consensus: BftConsensus,
-    validator: Wallet,
+    validator: ValidatorSigner,
     pending: Option<Block>,
     valid_block: Option<Block>,
     deadline: Instant,
@@ -67,6 +68,15 @@ impl ConsensusRuntime {
         chain: Blockchain,
         validators: Vec<Validator>,
         validator: Wallet,
+        timeouts: ConsensusTimeouts,
+    ) -> Result<Self, String> {
+        Self::with_signer(chain, validators, validator.into(), timeouts)
+    }
+
+    pub fn with_signer(
+        chain: Blockchain,
+        validators: Vec<Validator>,
+        validator: ValidatorSigner,
         timeouts: ConsensusTimeouts,
     ) -> Result<Self, String> {
         let next_height = chain.blocks.last().map(|b| b.height + 1).unwrap_or(1);
@@ -103,13 +113,22 @@ impl ConsensusRuntime {
             }
             _ => (block, None),
         };
-        Ok(SignedProposal::with_valid_round(
+        let proposer_id = self.validator.address();
+        let signature = self.validator.sign_bytes(&SignedProposal::bytes_to_sign(
             block.height,
             self.consensus.round(),
-            &self.validator,
+            &proposer_id,
+            &block.hash,
+            valid_round,
+        ))?;
+        SignedProposal::from_signature(
+            block.height,
+            self.consensus.round(),
+            proposer_id,
             block,
             valid_round,
-        ))
+            signature,
+        )
     }
 
     pub fn receive_proposal(
@@ -129,12 +148,12 @@ impl ConsensusRuntime {
         self.consensus.handle_proposal(&proposal)?;
         self.pending = Some(proposal.block.clone());
         self.reset_deadline();
-        Ok(ConsensusMessage::prevote(
+        self.sign_vote(
             proposal.height,
             proposal.round,
-            &self.validator,
+            VoteType::Prevote,
             proposal.block.hash,
-        ))
+        )
     }
 
     pub fn receive_vote(
@@ -167,12 +186,14 @@ impl ConsensusRuntime {
                 .ok_or("후보 블록이 없습니다.")?
                 .hash
                 .clone();
-            return Ok(Some(ConsensusMessage::precommit(
-                self.pending.as_ref().unwrap().height,
-                self.consensus.round(),
-                &self.validator,
-                block_hash,
-            )));
+            return self
+                .sign_vote(
+                    self.pending.as_ref().unwrap().height,
+                    self.consensus.round(),
+                    VoteType::Precommit,
+                    block_hash,
+                )
+                .map(Some);
         }
         if self.consensus.phase() == ConsensusPhase::Finalized {
             // 네트워크에서 같은 precommit이 다시 도착해도 이미 적용한 블록을
@@ -221,6 +242,31 @@ impl ConsensusRuntime {
 
     pub fn take_evidence(&mut self) -> Vec<DoubleVoteEvidence> {
         self.consensus.take_evidence()
+    }
+
+    fn sign_vote(
+        &self,
+        height: u64,
+        round: u32,
+        vote_type: VoteType,
+        block_hash: String,
+    ) -> Result<ConsensusMessage, String> {
+        let validator_id = self.validator.address();
+        let signature = self.validator.sign_bytes(&ConsensusMessage::bytes_to_sign(
+            height,
+            round,
+            &validator_id,
+            vote_type,
+            &block_hash,
+        ))?;
+        ConsensusMessage::from_signature(
+            height,
+            round,
+            validator_id,
+            vote_type,
+            block_hash,
+            signature,
+        )
     }
 
     /// 현재 확정 높이 뒤의 블록만 제공하며 한 응답을 128개로 제한합니다.

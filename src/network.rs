@@ -3,6 +3,7 @@ use crate::consensus::{
 };
 use crate::model::{Block, Transaction};
 use crate::peer_guard::{PeerDecision, PeerGuard};
+use crate::snapshot_sync::SyncTip;
 use futures::StreamExt;
 use libp2p::core::ConnectedPoint;
 use libp2p::{
@@ -20,7 +21,7 @@ use tokio::sync::mpsc;
 
 pub const BLOCK_TOPIC: &str = "ieum-chain/blocks/1";
 pub const CONSENSUS_TOPIC: &str = "ieum-chain/consensus/1";
-pub const SYNC_TOPIC: &str = "ieum-chain/sync/1";
+pub const SYNC_TOPIC: &str = "ieum-chain/sync/2";
 
 /// P2P 실행 시 바꿀 수 있는 네트워크·방어 설정입니다.
 #[derive(Clone, Debug)]
@@ -61,7 +62,7 @@ pub enum WireMessage {
     },
     SyncResponse {
         requester: String,
-        highest_height: u64,
+        tip: SyncTip,
         certificates: Vec<FinalityCertificate>,
     },
 }
@@ -77,7 +78,7 @@ pub enum NetworkCommand {
     RequestSync { from_height: u64 },
     RespondSync {
         requester: String,
-        highest_height: u64,
+        tip: SyncTip,
         certificates: Vec<FinalityCertificate>,
     },
     Dial(Multiaddr),
@@ -138,7 +139,7 @@ pub enum NetworkEvent {
     },
     SyncReceived {
         source: PeerId,
-        highest_height: u64,
+        tip: SyncTip,
         certificates: Vec<FinalityCertificate>,
     },
 }
@@ -323,7 +324,7 @@ impl P2pNode {
                     let mut kademlia = kad::Behaviour::new(peer_id, store);
                     kademlia.set_mode(Some(kad::Mode::Server));
                     let identify = identify::Behaviour::new(identify::Config::new(
-                        "/ieum-chain/1.0.0".into(),
+                        "/ieum-chain/1.1.0".into(),
                         key.public(),
                     ));
                     Ok(IeumBehaviour {
@@ -389,13 +390,13 @@ impl P2pNode {
                                     },
                                 );
                             }
-                            Some(NetworkCommand::RespondSync { requester, highest_height, certificates }) => {
+                            Some(NetworkCommand::RespondSync { requester, tip, certificates }) => {
                                 publish(
                                     &mut swarm,
                                     SYNC_TOPIC,
                                     &WireMessage::SyncResponse {
                                         requester,
-                                        highest_height,
+                                        tip,
                                         certificates,
                                     },
                                 );
@@ -610,7 +611,7 @@ async fn handle_swarm_event(
                 },
                 WireMessage::SyncResponse {
                     requester,
-                    highest_height,
+                    tip,
                     certificates,
                 } => {
                     if requester != swarm.local_peer_id().to_string() {
@@ -618,7 +619,7 @@ async fn handle_swarm_event(
                     }
                     NetworkEvent::SyncReceived {
                         source: propagation_source,
-                        highest_height,
+                        tip,
                         certificates,
                     }
                 }
