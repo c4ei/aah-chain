@@ -1,6 +1,6 @@
 # 개발 진행표
 
-기준일: 2026-07-24
+기준일: 2026-07-28
 
 ## 처리완료
 
@@ -15,28 +15,27 @@
 | Step 6-A | 처리완료 | 합의 투표 Ed25519 서명·검증, 단계별 투표 제한 |
 | Step 6-B | 처리완료 | WAL 영속 저장·복구, 재시작 후 로컬 이중서명 방지 |
 | v0.6.1 | 처리완료 | 한글 byte string 컴파일 오류 수정, 간헐 접속 클라이언트 설계 문서 추가 |
+| v0.7.1 | 테스트넷 구현 | 실행 루프의 4노드 BFT 확정, 확정 인증서 기반 신규 노드 동기화 |
+| v0.8.1 | 테스트넷 구현 | canonical 규칙, 상태 root·인덱스, keystore, mempool·운영 RPC |
+| v0.8.2 | 처리완료 | 컴파일 수정과 fmt·clippy·test·release build CI |
 
 ## 현재 제한
 
-- 합의 상태기계와 P2P 전파는 구현됐지만 노드 실행 루프에서 완전히 결합되지 않았습니다.
-- Proposal 자체의 검증자 서명과 proposal/block 매핑 검증은 아직 없습니다.
-- 라운드 timeout, 잠금(locked value), valid value 규칙은 아직 없습니다.
-- 블록 전체 동기화 대신 새 블록/합의 메시지 전파가 중심입니다.
-- PeerId 키가 재시작할 때 바뀌므로 운영용 node key 저장이 필요합니다.
+- 4노드 BFT와 P2P 실행 루프는 결합됐지만 실제 서로 다른 서버 4대의 장기 장애 시험이 필요합니다.
+- Proposal 서명과 proposal/block 매핑은 검증하지만 locked value / valid value 안전 규칙은 아직 없습니다.
+- 인증서 기반 증분 동기화는 구현됐지만 snapshot chunk, 다중 피어 교차 검증과 중단 위치 영속화는 아직 없습니다.
+- 영구 node key는 지원하지만 검증자 외부 signer/HSM은 아직 없습니다.
 - IP 단위 연결 속도 제한, subnet diversity, ASN 다양성은 아직 없습니다.
-- 현재 JSON 저장은 큰 체인에 적합하지 않습니다.
+- 원자적 JSON 상태 저장은 큰 체인에 적합하지 않아 embedded DB 전환이 필요합니다.
 
 ## 다음 단계
 
-### Step 6-C: BFT와 노드 완전 결합
+### Step 6-C: BFT 안전 규칙과 실서버 검증
 
-- Proposal 서명과 후보 블록 해시 검증
-- prevote/precommit 전 WAL 기록 후 P2P 전파
 - 외부 검증자의 이중투표 증거 저장·전파
 - Tendermint 계열 locked value / valid value 안전 규칙
-- propose/prevote/precommit timeout과 라운드 변경
-- 확정된 블록만 ledger에 반영
-- 검증자 4대 Docker/프로세스 통합 테스트
+- propose/prevote/precommit 단계별 timeout과 라운드 변경
+- 검증자 4대 Docker/프로세스 통합 테스트와 장기 장애 시험
 
 ### Step 7: 안전한 체인 동기화
 

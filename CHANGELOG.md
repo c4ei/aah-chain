@@ -1,5 +1,13 @@
 # 변경 기록
 
+## 0.8.2 - 2026-07-28
+
+- 동기화 응답 누적 바이트를 `usize`로 명시해 Rust 숫자 타입 추론 오류를 제거했습니다.
+- GitHub Actions에서 fmt, clippy, 전체 테스트, release build를 자동 검사합니다.
+- `four_node_bft`, 인증서 동기화, WAL, peer guard, v0.8.1 회귀 테스트가
+  모든 push와 pull request에서 실행됩니다.
+- ROADMAP의 오래된 현재 제한을 실제 v0.8.2 상태에 맞게 정리했습니다.
+
 ## 0.8.1 - 2026-07-28
 
 - BFT 확정 실행, 인증서 동기화, 상충 확정 인증서 거부를 강화했습니다.
