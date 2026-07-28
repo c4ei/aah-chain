@@ -111,3 +111,10 @@ ieum-chain/
 프로젝트가 커지면 `crates/ieum-network`, `crates/ieum-consensus`,
 `crates/ieum-ledger`, `apps/ieum-node`의 Cargo workspace로 분리합니다.
 지금은 배우기 쉽도록 한 crate 안에서 모듈만 나눴습니다.
+
+cargo build --release
+./target/release/ieum-chain server
+./target/release/ieum-chain
+
+cargo run --release -- client
+cargo run --release -- client

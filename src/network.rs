@@ -62,6 +62,11 @@ pub enum NetworkCommand {
 #[derive(Debug)]
 pub enum NetworkEvent {
     PeerDiscovered(PeerId),
+    OutgoingConnectionFailed {
+        peer_id: Option<PeerId>,
+        connection_id: String,
+        error: String,
+    },
     PeerConnected {
         peer_id: PeerId,
         remote_address: Multiaddr,
@@ -124,6 +129,18 @@ impl fmt::Display for NetworkEvent {
                 cause.as_deref().unwrap_or("정상 종료")
             ),
             Self::PeerDiscovered(peer_id) => write!(formatter, "[P2P 발견] PeerId: {peer_id}"),
+            Self::OutgoingConnectionFailed {
+                peer_id,
+                connection_id,
+                error,
+            } => write!(
+                formatter,
+                "[P2P 접속 실패]\n  PeerId: {}\n  연결 ID: {connection_id}\n  오류: {error}",
+                peer_id
+                    .as_ref()
+                    .map(ToString::to_string)
+                    .unwrap_or_else(|| "확인 불가".into())
+            ),
             Self::BlockReceived { source, block } => {
                 write!(formatter, "[P2P 블록 수신] PeerId: {source}, 블록: {block:?}")
             }
@@ -266,8 +283,9 @@ impl P2pNode {
                                 publish(&mut swarm, CONSENSUS_TOPIC, &WireMessage::Consensus(message));
                             }
                             Some(NetworkCommand::Dial(address)) => {
+                                println!("[P2P 접속 시도] {address}");
                                 if let Err(error) = swarm.dial(address) {
-                                    eprintln!("피어 연결 시작 실패: {error}");
+                                    eprintln!("[P2P 접속 시작 실패] {error}");
                                 }
                             }
                             Some(NetworkCommand::Shutdown) | None => break,
@@ -297,6 +315,7 @@ fn add_bootstrap_address(
     swarm: &mut libp2p::Swarm<IeumBehaviour>,
     mut address: Multiaddr,
 ) -> Result<(), String> {
+    let dial_address = address.clone();
     let peer_id = match address.pop() {
         Some(Protocol::P2p(peer_id)) => peer_id,
         _ => return Err("부트스트랩 주소 끝에는 /p2p/PeerId가 필요합니다.".into()),
@@ -306,7 +325,10 @@ fn add_bootstrap_address(
         .kademlia
         .add_address(&peer_id, address.clone());
     address.push(Protocol::P2p(peer_id));
-    swarm.dial(address).map_err(|error| error.to_string())
+    println!("[P2P 접속 시도] {dial_address}");
+    swarm.dial(address).map_err(|error| {
+        format!("[P2P 접속 시작 실패] 주소: {dial_address}, 오류: {error}")
+    })
 }
 
 fn publish(swarm: &mut libp2p::Swarm<IeumBehaviour>, topic: &str, message: &WireMessage) {
@@ -437,6 +459,19 @@ async fn handle_swarm_event(
                     connected_for,
                     current_connections: num_established as usize,
                     cause: cause.map(|error| error.to_string()),
+                })
+                .await;
+        }
+        SwarmEvent::OutgoingConnectionError {
+            connection_id,
+            peer_id,
+            error,
+        } => {
+            let _ = event_tx
+                .send(NetworkEvent::OutgoingConnectionFailed {
+                    peer_id,
+                    connection_id: format!("{connection_id:?}"),
+                    error: error.to_string(),
                 })
                 .await;
         }
