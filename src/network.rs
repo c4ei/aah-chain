@@ -1,5 +1,5 @@
-use crate::consensus::ConsensusMessage;
-use crate::model::Block;
+use crate::consensus::{ConsensusMessage, FinalityCertificate, SignedProposal};
+use crate::model::{Block, Transaction};
 use crate::peer_guard::{PeerDecision, PeerGuard};
 use futures::StreamExt;
 use libp2p::core::ConnectedPoint;
@@ -18,6 +18,7 @@ use tokio::sync::mpsc;
 
 pub const BLOCK_TOPIC: &str = "ieum-chain/blocks/1";
 pub const CONSENSUS_TOPIC: &str = "ieum-chain/consensus/1";
+pub const SYNC_TOPIC: &str = "ieum-chain/sync/1";
 
 /// P2P 실행 시 바꿀 수 있는 네트워크·방어 설정입니다.
 #[derive(Clone, Debug)]
@@ -36,7 +37,7 @@ impl Default for NetworkConfig {
             listen_port: 7001,
             bootstrap_peers: Vec::new(),
             identity_key: None,
-            max_message_bytes: 512 * 1024,
+            max_message_bytes: 2 * 1024 * 1024,
             idle_timeout: Duration::from_secs(30),
             ban_duration: Duration::from_secs(10 * 60),
         }
@@ -48,14 +49,31 @@ impl Default for NetworkConfig {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum WireMessage {
     Block(Block),
+    Transaction(Transaction),
+    Proposal(SignedProposal),
     Consensus(ConsensusMessage),
+    SyncRequest {
+        requester: String,
+        from_height: u64,
+    },
+    SyncResponse {
+        requester: String,
+        certificates: Vec<FinalityCertificate>,
+    },
 }
 
 /// 노드 코어가 비동기 P2P 작업에 보내는 명령입니다.
 #[derive(Clone, Debug)]
 pub enum NetworkCommand {
     PublishBlock(Block),
+    PublishTransaction(Transaction),
     PublishConsensus(ConsensusMessage),
+    PublishProposal(SignedProposal),
+    RequestSync { from_height: u64 },
+    RespondSync {
+        requester: String,
+        certificates: Vec<FinalityCertificate>,
+    },
     Dial(Multiaddr),
     Shutdown,
 }
@@ -91,9 +109,26 @@ pub enum NetworkEvent {
         source: PeerId,
         block: Block,
     },
+    TransactionReceived {
+        source: PeerId,
+        transaction: Transaction,
+    },
     ConsensusReceived {
         source: PeerId,
         message: ConsensusMessage,
+    },
+    ProposalReceived {
+        source: PeerId,
+        proposal: SignedProposal,
+    },
+    SyncRequested {
+        source: PeerId,
+        requester: String,
+        from_height: u64,
+    },
+    SyncReceived {
+        source: PeerId,
+        certificates: Vec<FinalityCertificate>,
     },
 }
 
@@ -146,9 +181,38 @@ impl fmt::Display for NetworkEvent {
             Self::BlockReceived { source, block } => {
                 write!(formatter, "[P2P 블록 수신] PeerId: {source}, 블록: {block:?}")
             }
+            Self::TransactionReceived {
+                source,
+                transaction,
+            } => write!(
+                formatter,
+                "[P2P 거래 수신] PeerId: {source}, 거래: {}",
+                transaction.id()
+            ),
             Self::ConsensusReceived { source, message } => {
                 write!(formatter, "[P2P 합의 수신] PeerId: {source}, 메시지: {message:?}")
             }
+            Self::ProposalReceived { source, proposal } => write!(
+                formatter,
+                "[P2P 제안 수신] PeerId: {source}, 높이: {}, 해시: {}",
+                proposal.height, proposal.block.hash
+            ),
+            Self::SyncRequested {
+                source,
+                from_height,
+                ..
+            } => write!(
+                formatter,
+                "[P2P 동기화 요청] PeerId: {source}, 시작 높이: {from_height}"
+            ),
+            Self::SyncReceived {
+                source,
+                certificates,
+            } => write!(
+                formatter,
+                "[P2P 동기화 응답] PeerId: {source}, 확정 블록: {}개",
+                certificates.len()
+            ),
         }
     }
 }
@@ -235,6 +299,7 @@ impl P2pNode {
                     )?;
                     gossipsub.subscribe(&gossipsub::IdentTopic::new(BLOCK_TOPIC))?;
                     gossipsub.subscribe(&gossipsub::IdentTopic::new(CONSENSUS_TOPIC))?;
+                    gossipsub.subscribe(&gossipsub::IdentTopic::new(SYNC_TOPIC))?;
 
                     let mdns = mdns::tokio::Behaviour::new(mdns::Config::default(), peer_id)?;
                     let store = kad::store::MemoryStore::new(peer_id);
@@ -281,8 +346,38 @@ impl P2pNode {
                             Some(NetworkCommand::PublishBlock(block)) => {
                                 publish(&mut swarm, BLOCK_TOPIC, &WireMessage::Block(block));
                             }
+                            Some(NetworkCommand::PublishTransaction(transaction)) => {
+                                publish(
+                                    &mut swarm,
+                                    BLOCK_TOPIC,
+                                    &WireMessage::Transaction(transaction),
+                                );
+                            }
                             Some(NetworkCommand::PublishConsensus(message)) => {
                                 publish(&mut swarm, CONSENSUS_TOPIC, &WireMessage::Consensus(message));
+                            }
+                            Some(NetworkCommand::PublishProposal(proposal)) => {
+                                publish(&mut swarm, CONSENSUS_TOPIC, &WireMessage::Proposal(proposal));
+                            }
+                            Some(NetworkCommand::RequestSync { from_height }) => {
+                                publish(
+                                    &mut swarm,
+                                    SYNC_TOPIC,
+                                    &WireMessage::SyncRequest {
+                                        requester: local_peer_id.to_string(),
+                                        from_height,
+                                    },
+                                );
+                            }
+                            Some(NetworkCommand::RespondSync { requester, certificates }) => {
+                                publish(
+                                    &mut swarm,
+                                    SYNC_TOPIC,
+                                    &WireMessage::SyncResponse {
+                                        requester,
+                                        certificates,
+                                    },
+                                );
                             }
                             Some(NetworkCommand::Dial(address)) => {
                                 if let Err(error) = dial_address(&mut swarm, address).await {
@@ -468,10 +563,38 @@ async fn handle_swarm_event(
                     source: propagation_source,
                     block,
                 },
+                WireMessage::Transaction(transaction) => NetworkEvent::TransactionReceived {
+                    source: propagation_source,
+                    transaction,
+                },
                 WireMessage::Consensus(message) => NetworkEvent::ConsensusReceived {
                     source: propagation_source,
                     message,
                 },
+                WireMessage::Proposal(proposal) => NetworkEvent::ProposalReceived {
+                    source: propagation_source,
+                    proposal,
+                },
+                WireMessage::SyncRequest {
+                    requester,
+                    from_height,
+                } => NetworkEvent::SyncRequested {
+                    source: propagation_source,
+                    requester,
+                    from_height,
+                },
+                WireMessage::SyncResponse {
+                    requester,
+                    certificates,
+                } => {
+                    if requester != swarm.local_peer_id().to_string() {
+                        return Ok(());
+                    }
+                    NetworkEvent::SyncReceived {
+                        source: propagation_source,
+                        certificates,
+                    }
+                }
             };
             event_tx
                 .send(network_event)

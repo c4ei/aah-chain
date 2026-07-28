@@ -1,6 +1,7 @@
 use clap::{Args as ClapArgs, Parser, Subcommand};
 use ieum_chain::{
-    NetworkConfig, P2pNode, RpcConfig, RpcServer, log_info,
+    ConsensusRuntime, FinalityStore, NetworkCommand, NetworkConfig, NetworkEvent, P2pNode,
+    RpcConfig, RpcServer, Validator, Wallet, log_error, log_info,
     logger::init_server_log, node_key::load_or_create_node_key,
 };
 use libp2p::Multiaddr;
@@ -9,6 +10,7 @@ use std::fs;
 use std::net::{IpAddr, Ipv4Addr, TcpListener, UdpSocket};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 const DEFAULT_BOOTSTRAP_CONFIG: &str = "config/bootstrap.json";
 const DEFAULT_BOOTSTRAP_PEER: &str = "/dns4/node.ieum.aah.name/udp/7001/quic-v1/p2p/12D3KooWAVRZjnbP8nXp8vD6irYFAXdLJVyczEFWdKLFzKnKDATx";
@@ -37,7 +39,7 @@ struct NodeArgs {
     port: u16,
 
     /// 단일 P2P 메시지 최대 크기
-    #[arg(long, default_value_t = 524_288)]
+    #[arg(long, default_value_t = 2_097_152)]
     max_message_bytes: usize,
 
     /// 지갑/geth 호환 JSON-RPC TCP 포트
@@ -55,16 +57,20 @@ struct NodeArgs {
     /// 재시작 후에도 PeerId를 유지할 영구 노드 키 파일
     #[arg(long, default_value = "data/node.key")]
     node_key: PathBuf,
+
+    /// 4노드 테스트넷 검증자 번호(1~4). server에서만 사용합니다.
+    #[arg(long, default_value_t = 1, value_parser = clap::value_parser!(u8).range(1..=4))]
+    validator_index: u8,
+
+    /// 서버/클라이언트가 시작할 때 접속할 추가 P2P 주소
+    #[arg(long, help = "/dns4/node.ieum.aah.name/udp/7001/quic-v1/p2p/PeerId")]
+    peer: Vec<Multiaddr>,
 }
 
 #[derive(Debug, ClapArgs)]
 struct ClientArgs {
     #[command(flatten)]
     node: NodeArgs,
-
-    /// 추가 운영 서버 주소. 지정하지 않으면 config/bootstrap.json을 자동으로 읽습니다.
-    #[arg(long, help = "/dns4/node.ieum.aah.name/udp/7001/quic-v1/p2p/PeerId")]
-    peer: Vec<Multiaddr>,
 
     /// 자동으로 읽을 부트스트랩 설정 파일
     #[arg(long, default_value = DEFAULT_BOOTSTRAP_CONFIG)]
@@ -79,7 +85,8 @@ async fn main() -> Result<(), String> {
             if args.node_key == PathBuf::from("data/node.key") {
                 args.node_key = PathBuf::from("data/server.node.key");
             }
-            ("서버", args, Vec::new(), false)
+            let peers = std::mem::take(&mut args.peer);
+            ("서버", args, peers, false)
         }
         Some(Command::Client(mut client)) => {
             if client.node.node_key == PathBuf::from("data/node.key") {
@@ -88,17 +95,20 @@ async fn main() -> Result<(), String> {
             if client.node.rpc_data_dir == PathBuf::from("data/ledger") {
                 client.node.rpc_data_dir = PathBuf::from("data/client-ledger");
             }
-            let peers = load_bootstrap_peers(&client.bootstrap_config, client.peer)?;
+            let peers =
+                load_bootstrap_peers(&client.bootstrap_config, std::mem::take(&mut client.node.peer))?;
             ("일반 PC", client.node, peers, true)
         }
         None => {
             let node = NodeArgs {
                 port: 7001,
-                max_message_bytes: 524_288,
+                max_message_bytes: 2_097_152,
                 rpc_port: 8989,
                 rpc_host: IpAddr::V4(Ipv4Addr::LOCALHOST),
                 rpc_data_dir: PathBuf::from("data/client-ledger"),
                 node_key: PathBuf::from("data/client.node.key"),
+                validator_index: 1,
+                peer: Vec::new(),
             };
             let peers =
                 load_bootstrap_peers(Path::new(DEFAULT_BOOTSTRAP_CONFIG), Vec::new())?;
@@ -121,7 +131,7 @@ async fn main() -> Result<(), String> {
         ban_duration: Duration::from_secs(10 * 60),
     };
     let startup_peers = config.bootstrap_peers.clone();
-    let (peer_id, _commands, mut events) = P2pNode::new(config).run().await?;
+    let (peer_id, commands, mut events) = P2pNode::new(config).run().await?;
 
     let rpc_config = RpcConfig {
         listen_ip: args.rpc_host,
@@ -129,7 +139,29 @@ async fn main() -> Result<(), String> {
         data_dir: args.rpc_data_dir.clone(),
         ..RpcConfig::default()
     };
-    let mut rpc_task = tokio::spawn(RpcServer::new(rpc_config).run());
+    let rpc_server = RpcServer::new(rpc_config);
+    let rpc = rpc_server.node_handle();
+    let mut rpc_task = tokio::spawn(rpc_server.run());
+    let validator_wallets: Vec<_> = (1_u8..=4)
+        .map(|index| Wallet::from_seed(testnet_validator_seed(index)))
+        .collect();
+    let validators = validator_wallets
+        .iter()
+        .map(|wallet| Validator::new(wallet.address(), 100))
+        .collect::<Vec<_>>();
+    let local_validator = Wallet::from_seed(testnet_validator_seed(args.validator_index));
+    let mut consensus = ConsensusRuntime::new(
+        rpc.chain()?,
+        validators.clone(),
+        local_validator,
+        Duration::from_secs(3),
+    )?;
+    let finality_store = FinalityStore::new(&args.rpc_data_dir)?;
+    let imported = consensus.import_certificate_history(finality_store.load(&validators)?)?;
+    if imported > 0 {
+        log_info!("[BFT 인증서 복원] {imported}개");
+    }
+    let mut consensus_tick = tokio::time::interval(Duration::from_millis(500));
 
     log_info!("IEUM {mode} 노드 시작: {peer_id}");
     log_info!("영구 노드 키: {}", args.node_key.display());
@@ -146,6 +178,44 @@ async fn main() -> Result<(), String> {
 
     loop {
         tokio::select! {
+            _ = consensus_tick.tick() => {
+                let timed_out_transactions = consensus.pending_transactions();
+                if consensus.timeout_if_due(std::time::Instant::now())? {
+                    rpc.restore_transactions(timed_out_transactions)?;
+                    log_info!("[BFT 라운드 변경] 제안 시간 초과");
+                }
+                if !is_client {
+                    let pending = rpc.drain_transactions(1_000)?;
+                    if !pending.is_empty() {
+                        let previous = consensus.chain.blocks.last().unwrap();
+                        let block = ieum_chain::Block::new(
+                            previous.height + 1,
+                            previous.hash.clone(),
+                            unix_timestamp(),
+                            validator_wallets[(args.validator_index - 1) as usize].address(),
+                            pending.clone(),
+                        );
+                        match consensus.make_proposal(block) {
+                            Ok(proposal) => {
+                                let prevote = consensus.receive_proposal(proposal.clone())?;
+                                commands.send(NetworkCommand::PublishProposal(proposal)).await.map_err(|e| e.to_string())?;
+                                commands.send(NetworkCommand::PublishConsensus(prevote.clone())).await.map_err(|e| e.to_string())?;
+                                if let Some(precommit) = consensus.receive_vote(prevote)? {
+                                    commands.send(NetworkCommand::PublishConsensus(precommit.clone())).await.map_err(|e| e.to_string())?;
+                                    consensus.receive_vote(precommit)?;
+                                }
+                                finalize_if_ready(&mut consensus, &rpc, &commands, &finality_store).await?;
+                            }
+                            Err(_) => {
+                                for transaction in &pending {
+                                    commands.send(NetworkCommand::PublishTransaction(transaction.clone())).await.map_err(|e| e.to_string())?;
+                                }
+                                rpc.restore_transactions(pending)?;
+                            }
+                        }
+                    }
+                }
+            }
             result = &mut rpc_task => {
                 return match result {
                     Ok(Ok(())) => Err("JSON-RPC 서버가 예기치 않게 종료되었습니다.".into()),
@@ -155,6 +225,67 @@ async fn main() -> Result<(), String> {
             }
             event = events.recv() => {
                 match event {
+                    Some(NetworkEvent::PeerConnected { peer_id: connected, remote_address, remote_ip, direction, connection_id, current_connections }) => {
+                        log_info!("{}", NetworkEvent::PeerConnected { peer_id: connected, remote_address, remote_ip, direction, connection_id, current_connections });
+                        commands.send(NetworkCommand::RequestSync {
+                            from_height: consensus.chain.tip_height() + 1,
+                        }).await.map_err(|e| e.to_string())?;
+                    }
+                    Some(NetworkEvent::TransactionReceived { transaction, .. }) => {
+                        rpc.restore_transactions(vec![transaction])?;
+                    }
+                    Some(NetworkEvent::ProposalReceived { proposal, .. }) if !is_client => {
+                        match consensus.receive_proposal(proposal) {
+                            Ok(prevote) => {
+                                commands.send(NetworkCommand::PublishConsensus(prevote.clone())).await.map_err(|e| e.to_string())?;
+                                if let Some(precommit) = consensus.receive_vote(prevote)? {
+                                    commands.send(NetworkCommand::PublishConsensus(precommit.clone())).await.map_err(|e| e.to_string())?;
+                                    consensus.receive_vote(precommit)?;
+                                }
+                                finalize_if_ready(&mut consensus, &rpc, &commands, &finality_store).await?;
+                            }
+                            Err(error) => log_error!("[BFT 제안 거부] {error}"),
+                        }
+                    }
+                    Some(NetworkEvent::ConsensusReceived { message, .. }) if !is_client => {
+                        match consensus.receive_vote(message) {
+                            Ok(Some(precommit)) => {
+                                commands.send(NetworkCommand::PublishConsensus(precommit.clone())).await.map_err(|e| e.to_string())?;
+                                consensus.receive_vote(precommit)?;
+                            }
+                            Ok(None) => {}
+                            Err(error) => log_error!("[BFT 투표 거부] {error}"),
+                        }
+                        finalize_if_ready(&mut consensus, &rpc, &commands, &finality_store).await?;
+                    }
+                    Some(NetworkEvent::SyncRequested { requester, from_height, .. }) if !is_client => {
+                        commands.send(NetworkCommand::RespondSync {
+                            requester,
+                            certificates: consensus.certificates_from(from_height),
+                        }).await.map_err(|e| e.to_string())?;
+                    }
+                    Some(NetworkEvent::SyncReceived { certificates, .. }) => {
+                        let mut applied = 0;
+                        for certificate in certificates {
+                            let chain_before = consensus.chain.clone();
+                            let block = certificate.block.clone();
+                            if consensus.apply_sync_certificates(vec![certificate.clone()])? == 1 {
+                                rpc.install_finalized(
+                                    &chain_before,
+                                    consensus.chain.clone(),
+                                    &block,
+                                )?;
+                                finality_store.append(&certificate)?;
+                                applied += 1;
+                            }
+                        }
+                        if applied > 0 {
+                            log_info!("[동기화 완료] 확정 블록 {applied}개 적용, 높이 {}", consensus.chain.tip_height());
+                            commands.send(NetworkCommand::RequestSync {
+                                from_height: consensus.chain.tip_height() + 1,
+                            }).await.map_err(|e| e.to_string())?;
+                        }
+                    }
                     Some(event) => log_info!("{event}"),
                     None => {
                         rpc_task.abort();
@@ -170,6 +301,46 @@ async fn main() -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+async fn finalize_if_ready(
+    consensus: &mut ConsensusRuntime,
+    rpc: &ieum_chain::rpc::RpcNodeHandle,
+    commands: &tokio::sync::mpsc::Sender<NetworkCommand>,
+    finality_store: &FinalityStore,
+) -> Result<(), String> {
+    let certificates = consensus.take_finalized();
+    if certificates.is_empty() {
+        return Ok(());
+    }
+    for certificate in certificates {
+        let chain_before = rpc.chain()?;
+        let chain_after = consensus.chain.clone();
+        rpc.install_finalized(&chain_before, chain_after, &certificate.block)?;
+        finality_store.append(&certificate)?;
+        commands
+            .send(NetworkCommand::PublishBlock(certificate.block.clone()))
+            .await
+            .map_err(|error| error.to_string())?;
+        log_info!(
+            "[BFT 확정] 높이 {}, 해시 {}, precommit {}개",
+            certificate.block.height,
+            certificate.block.hash,
+            certificate.precommits.len()
+        );
+    }
+    consensus.advance_after_finalization()
+}
+
+fn testnet_validator_seed(index: u8) -> [u8; 32] {
+    [index; 32]
+}
+
+fn unix_timestamp() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
 }
 
 struct InstanceGuard {

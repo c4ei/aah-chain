@@ -1,5 +1,5 @@
 use crate::model::{Block, Transaction};
-use crate::{ArchiveStore, Blockchain, GenesisConfig, Mempool, Wallet, account::AccountWallet};
+use crate::{ArchiveStore, Blockchain, GenesisConfig, Mempool, account::AccountWallet};
 use axum::{Json, Router, routing::post};
 use serde_json::{Value, json};
 use std::collections::HashMap;
@@ -37,7 +37,6 @@ struct RpcState {
     /// Ethereum 표준 0x 주소를 실제 secp256k1 지갑에 연결합니다.
     wallets: HashMap<String, AccountWallet>,
     faucet_alias: String,
-    producer: Wallet,
     chain_id: u64,
     archive: ArchiveStore,
 }
@@ -52,13 +51,69 @@ pub struct RpcServer {
     state: Arc<RwLock<RpcState>>,
 }
 
+#[derive(Clone)]
+pub struct RpcNodeHandle {
+    state: Arc<RwLock<RpcState>>,
+}
+
+impl RpcNodeHandle {
+    pub fn chain(&self) -> Result<Blockchain, String> {
+        self.state
+            .read()
+            .map(|state| state.chain.clone())
+            .map_err(|_| "RPC 상태 읽기 잠금이 손상되었습니다.".into())
+    }
+
+    pub fn drain_transactions(&self, limit: usize) -> Result<Vec<Transaction>, String> {
+        self.state
+            .write()
+            .map(|mut state| state.pool.drain(limit))
+            .map_err(|_| "RPC 상태 쓰기 잠금이 손상되었습니다.".into())
+    }
+
+    pub fn restore_transactions(&self, transactions: Vec<Transaction>) -> Result<(), String> {
+        let mut state = self
+            .state
+            .write()
+            .map_err(|_| "RPC 상태 쓰기 잠금이 손상되었습니다.".to_string())?;
+        for transaction in transactions {
+            let _ = state.pool.add(transaction);
+        }
+        Ok(())
+    }
+
+    /// 합의 코어에서 검증·확정한 체인만 RPC 조회 원장과 영구 저장소에 반영합니다.
+    pub fn install_finalized(
+        &self,
+        chain_before: &Blockchain,
+        chain_after: Blockchain,
+        block: &Block,
+    ) -> Result<(), String> {
+        let mut state = self
+            .state
+            .write()
+            .map_err(|_| "RPC 상태 쓰기 잠금이 손상되었습니다.".to_string())?;
+        state
+            .archive
+            .append_finalized(block, chain_before, &chain_after)?;
+        state.chain = chain_after;
+        Ok(())
+    }
+
+    pub fn install_synced_chain(&self, chain: Blockchain) -> Result<(), String> {
+        self.state
+            .write()
+            .map(|mut state| state.chain = chain)
+            .map_err(|_| "RPC 상태 쓰기 잠금이 손상되었습니다.".into())
+    }
+}
+
 impl RpcServer {
     pub fn new(config: RpcConfig) -> Self {
         // 첫 번째 계정은 개발용 faucet입니다. 실제 운영망에서는 genesis/config와
         // 암호화된 keystore로 교체해야 합니다.
         let faucet = AccountWallet::from_private_key([42; 32])
             .expect("고정 개발용 faucet 개인키는 유효해야 합니다.");
-        let producer = Wallet::from_seed([43; 32]);
         let chain_id = config
             .genesis
             .as_ref()
@@ -116,7 +171,6 @@ impl RpcServer {
                 pool: Mempool::default(),
                 wallets,
                 faucet_alias: faucet_address,
-                producer,
                 chain_id,
                 archive,
             })),
@@ -136,6 +190,12 @@ impl RpcServer {
         axum::serve(listener, app)
             .await
             .map_err(|error| format!("JSON-RPC 서버 오류: {error}"))
+    }
+
+    pub fn node_handle(&self) -> RpcNodeHandle {
+        RpcNodeHandle {
+            state: Arc::clone(&self.state),
+        }
     }
 }
 
@@ -169,7 +229,11 @@ fn dispatch(
     params: &[Value],
 ) -> Result<Value, (i64, String)> {
     match method {
-        "web3_clientVersion" => Ok(json!("IEUM-Chain/v0.6.3/rpc/rust")),
+        "web3_clientVersion" => Ok(json!(concat!(
+            "IEUM-Chain/v",
+            env!("CARGO_PKG_VERSION"),
+            "/rpc/rust"
+        ))),
         "net_version" => {
             let state = read_state(state)?;
             Ok(json!(state.chain_id.to_string()))
@@ -345,24 +409,6 @@ fn send_raw_transaction(
         .pool
         .add(transaction)
         .map_err(|message| (-32000, message))?;
-    let transactions = state.pool.drain(1_000);
-    let producer = state.producer.address();
-    let chain_before = state.chain.clone();
-    state
-        .chain
-        .add_block(transactions, producer)
-        .map_err(|message| (-32000, message))?;
-    let block = state
-        .chain
-        .blocks
-        .last()
-        .cloned()
-        .expect("방금 생성한 블록");
-    let chain_after = state.chain.clone();
-    state
-        .archive
-        .append_finalized(&block, &chain_before, &chain_after)
-        .map_err(|message| (-32000, message))?;
     Ok(json!(transaction_hash))
 }
 
@@ -423,26 +469,6 @@ fn send_transaction(
         .add(transaction)
         .map_err(|message| (-32000, message))?;
 
-    // v0.0.4 개발 노드는 거래가 들어오면 즉시 작은 블록을 만듭니다.
-    // 이후 BFT 실행 루프가 결합되면 여기서는 mempool 제출만 수행해야 합니다.
-    let transactions = state.pool.drain(1_000);
-    let producer = state.producer.address();
-    let chain_before = state.chain.clone();
-    state
-        .chain
-        .add_block(transactions, producer)
-        .map_err(|message| (-32000, message))?;
-    let block = state
-        .chain
-        .blocks
-        .last()
-        .cloned()
-        .expect("방금 생성한 블록");
-    let chain_after = state.chain.clone();
-    state
-        .archive
-        .append_finalized(&block, &chain_before, &chain_after)
-        .map_err(|message| (-32000, message))?;
     Ok(json!(transaction_id))
 }
 
@@ -564,7 +590,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn geth_style_account_balance_and_transfer_work() {
+    fn submitted_transaction_waits_for_bft_finality() {
         let shared = RpcServer::new(RpcConfig::default()).state;
         let accounts = dispatch(&shared, "eth_accounts", &[])
             .unwrap()
@@ -580,14 +606,11 @@ mod tests {
 
         let tx = json!({"from": faucet, "to": receiver, "value": "0x64", "gasPrice": "0x1"});
         assert!(dispatch(&shared, "eth_sendTransaction", &[tx]).is_ok());
+        assert_eq!(shared.read().unwrap().pool.len(), 1);
+        assert_eq!(dispatch(&shared, "eth_blockNumber", &[]).unwrap(), json!("0x0"));
         assert_eq!(
-            dispatch(
-                &shared,
-                "eth_getBalance",
-                &[json!(receiver), json!("latest")]
-            )
-            .unwrap(),
-            json!("0x64")
+            dispatch(&shared, "eth_getBalance", &[json!(receiver), json!("latest")]).unwrap(),
+            json!("0x0")
         );
     }
 

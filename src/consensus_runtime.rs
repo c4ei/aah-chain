@@ -1,5 +1,8 @@
 use crate::chain::Blockchain;
-use crate::consensus::{BftConsensus, ConsensusMessage, ConsensusPhase, SignedProposal, Validator};
+use crate::consensus::{
+    BftConsensus, ConsensusMessage, ConsensusPhase, FinalityCertificate, SignedProposal, Validator,
+    VoteType,
+};
 use crate::model::Block;
 use crate::wallet::Wallet;
 use std::time::{Duration, Instant};
@@ -13,6 +16,10 @@ pub struct ConsensusRuntime {
     pending: Option<Block>,
     deadline: Instant,
     timeout: Duration,
+    validators: Vec<Validator>,
+    precommits: Vec<ConsensusMessage>,
+    finalized: Vec<FinalityCertificate>,
+    pending_finalized: Vec<FinalityCertificate>,
 }
 
 impl ConsensusRuntime {
@@ -23,7 +30,7 @@ impl ConsensusRuntime {
         timeout: Duration,
     ) -> Result<Self, String> {
         let next_height = chain.blocks.last().map(|b| b.height + 1).unwrap_or(1);
-        let mut consensus = BftConsensus::new(validators)?;
+        let mut consensus = BftConsensus::new(validators.clone())?;
         consensus.start_round(next_height, 0)?;
         Ok(Self {
             chain,
@@ -32,6 +39,10 @@ impl ConsensusRuntime {
             pending: None,
             deadline: Instant::now() + timeout,
             timeout,
+            validators,
+            precommits: Vec::new(),
+            finalized: Vec::new(),
+            pending_finalized: Vec::new(),
         })
     }
 
@@ -76,6 +87,15 @@ impl ConsensusRuntime {
         &mut self,
         vote: ConsensusMessage,
     ) -> Result<Option<ConsensusMessage>, String> {
+        if vote.vote_type == VoteType::Precommit
+            && !self.precommits.iter().any(|existing| {
+                existing.height == vote.height
+                    && existing.round == vote.round
+                    && existing.validator_id == vote.validator_id
+            })
+        {
+            self.precommits.push(vote.clone());
+        }
         self.consensus.handle(vote)?;
         if self.consensus.phase() == ConsensusPhase::Precommit {
             let block_hash = self
@@ -100,7 +120,15 @@ impl ConsensusRuntime {
             if self.consensus.finalized_hash() != Some(block.hash.as_str()) {
                 return Err("확정 해시와 후보 블록 해시가 다릅니다.".into());
             }
+            let certificate = FinalityCertificate {
+                block: block.clone(),
+                round: self.consensus.round(),
+                precommits: self.precommits.clone(),
+            };
+            certificate.verify(&self.validators)?;
             self.chain.apply_block(block)?;
+            self.finalized.push(certificate.clone());
+            self.pending_finalized.push(certificate);
         }
         Ok(None)
     }
@@ -111,8 +139,16 @@ impl ConsensusRuntime {
         }
         self.consensus.on_timeout()?;
         self.pending = None;
+        self.precommits.clear();
         self.deadline = now + self.timeout;
         Ok(true)
+    }
+
+    pub fn pending_transactions(&self) -> Vec<crate::model::Transaction> {
+        self.pending
+            .as_ref()
+            .map(|block| block.transactions.clone())
+            .unwrap_or_default()
     }
 
     pub fn force_timeout_for_test(&mut self) -> Result<u32, String> {
@@ -129,6 +165,100 @@ impl ConsensusRuntime {
             .take(128)
             .cloned()
             .collect()
+    }
+
+    pub fn certificates_from(&self, from_height: u64) -> Vec<FinalityCertificate> {
+        const MAX_SYNC_BYTES: usize = 1_500_000;
+        let mut bytes: usize = 0;
+        let mut selected = Vec::new();
+        for certificate in self
+            .finalized
+            .iter()
+            .filter(|certificate| certificate.block.height >= from_height)
+            .take(128)
+        {
+            let size = serde_json::to_vec(certificate)
+                .map(|value| value.len())
+                .unwrap_or(MAX_SYNC_BYTES + 1);
+            if !selected.is_empty() && bytes.saturating_add(size) > MAX_SYNC_BYTES {
+                break;
+            }
+            bytes = bytes.saturating_add(size);
+            selected.push(certificate.clone());
+        }
+        selected
+    }
+
+    pub fn import_certificate_history(
+        &mut self,
+        certificates: Vec<FinalityCertificate>,
+    ) -> Result<usize, String> {
+        let mut imported = 0;
+        for certificate in certificates {
+            certificate.verify(&self.validators)?;
+            let Some(block) = self.chain.block_by_height(certificate.block.height) else {
+                continue;
+            };
+            if block.hash != certificate.block.hash {
+                return Err("원장 블록과 확정 인증서 해시가 다릅니다.".into());
+            }
+            if !self
+                .finalized
+                .iter()
+                .any(|known| known.block.height == certificate.block.height)
+            {
+                self.finalized.push(certificate);
+                imported += 1;
+            }
+        }
+        self.finalized.sort_by_key(|certificate| certificate.block.height);
+        Ok(imported)
+    }
+
+    pub fn take_finalized(&mut self) -> Vec<FinalityCertificate> {
+        std::mem::take(&mut self.pending_finalized)
+    }
+
+    /// 확정 인증서를 검증하고 현재 tip 바로 다음 블록만 순서대로 적용합니다.
+    pub fn apply_sync_certificates(
+        &mut self,
+        certificates: Vec<FinalityCertificate>,
+    ) -> Result<usize, String> {
+        let mut applied = 0;
+        for certificate in certificates {
+            certificate.verify(&self.validators)?;
+            let next = self.chain.blocks.last().unwrap().height + 1;
+            if certificate.block.height < next {
+                continue;
+            }
+            if certificate.block.height != next {
+                return Err("동기화 응답에 블록 높이 공백이 있습니다.".into());
+            }
+            self.chain.apply_block(certificate.block.clone())?;
+            self.finalized.push(certificate);
+            applied += 1;
+        }
+        if applied > 0 {
+            let next_height = self.chain.blocks.last().unwrap().height + 1;
+            self.consensus.start_round(next_height, 0)?;
+            self.pending = None;
+            self.precommits.clear();
+            self.deadline = Instant::now() + self.timeout;
+        }
+        Ok(applied)
+    }
+
+    /// 확정 블록 저장 후 다음 높이의 0라운드를 시작합니다.
+    pub fn advance_after_finalization(&mut self) -> Result<(), String> {
+        if self.consensus.phase() != ConsensusPhase::Finalized {
+            return Err("확정되지 않은 상태에서는 다음 높이로 이동할 수 없습니다.".into());
+        }
+        let next_height = self.chain.blocks.last().unwrap().height + 1;
+        self.consensus.start_round(next_height, 0)?;
+        self.pending = None;
+        self.precommits.clear();
+        self.deadline = Instant::now() + self.timeout;
+        Ok(())
     }
 
     /// 제네시스 commitment가 같은 체인의 연속 블록만 적용합니다.

@@ -109,6 +109,57 @@ pub struct ConsensusMessage {
     pub signature: String,
 }
 
+/// 확정 블록과 그 블록을 확정한 precommit 증명입니다.
+///
+/// 새 노드는 단순히 가장 긴 체인을 믿지 않고 등록 검증자 투표권의 2/3 초과
+/// 서명을 직접 확인한 뒤에만 블록을 적용합니다.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct FinalityCertificate {
+    pub block: Block,
+    pub round: u32,
+    pub precommits: Vec<ConsensusMessage>,
+}
+
+impl FinalityCertificate {
+    pub fn verify(&self, validators: &[Validator]) -> Result<(), String> {
+        if self.block.hash != self.block.calculate_hash() {
+            return Err("확정 인증서의 블록 해시가 올바르지 않습니다.".into());
+        }
+        let total_power: u128 = validators.iter().map(|v| v.voting_power as u128).sum();
+        if total_power == 0 {
+            return Err("검증자 총 투표권이 0입니다.".into());
+        }
+        let powers: HashMap<_, _> = validators
+            .iter()
+            .map(|v| (v.id.as_str(), v.voting_power as u128))
+            .collect();
+        let mut voters = HashSet::new();
+        let mut signed_power = 0_u128;
+        for vote in &self.precommits {
+            if vote.height != self.block.height
+                || vote.round != self.round
+                || vote.vote_type != VoteType::Precommit
+                || vote.block_hash != self.block.hash
+            {
+                return Err("확정 인증서에 다른 높이·라운드·블록 투표가 섞였습니다.".into());
+            }
+            vote.verify()?;
+            let power = powers
+                .get(vote.validator_id.as_str())
+                .ok_or("등록되지 않은 검증자의 precommit입니다.")?;
+            if voters.insert(vote.validator_id.as_str()) {
+                signed_power = signed_power
+                    .checked_add(*power)
+                    .ok_or("확정 투표권 합계가 범위를 넘었습니다.")?;
+            }
+        }
+        if signed_power * 3 <= total_power * 2 {
+            return Err("확정에 필요한 2/3 초과 precommit이 없습니다.".into());
+        }
+        Ok(())
+    }
+}
+
 impl ConsensusMessage {
     fn unsigned_bytes(
         height: u64,

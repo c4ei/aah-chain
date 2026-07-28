@@ -84,9 +84,40 @@ fn four_nodes_finalize_then_store_and_new_node_syncs() {
     );
 
     let (mut fresh, _) = setup();
-    let blocks = nodes[0].blocks_from(1);
-    assert_eq!(fresh[0].apply_sync_batch(blocks).unwrap(), 1);
+    let certificates = nodes[0].certificates_from(1);
+    assert_eq!(certificates.len(), 1);
+    assert_eq!(
+        fresh[0]
+            .apply_sync_certificates(certificates)
+            .unwrap(),
+        1
+    );
     assert_eq!(fresh[0].chain.blocks, nodes[0].chain.blocks);
+}
+
+#[test]
+fn new_node_rejects_block_without_three_precommits() {
+    let (mut nodes, wallets) = setup();
+    let block = Block::new(
+        1,
+        nodes[0].chain.blocks[0].hash.clone(),
+        1,
+        "validator".into(),
+        vec![],
+    );
+    let certificate = ieum_chain::FinalityCertificate {
+        round: 0,
+        precommits: wallets
+            .iter()
+            .take(2)
+            .map(|wallet| {
+                ieum_chain::ConsensusMessage::precommit(1, 0, wallet, block.hash.clone())
+            })
+            .collect(),
+        block,
+    };
+    assert!(nodes[0].apply_sync_certificates(vec![certificate]).is_err());
+    assert_eq!(nodes[0].chain.tip_height(), 0);
 }
 
 #[test]
