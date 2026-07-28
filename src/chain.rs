@@ -5,6 +5,14 @@ use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+/// 운영 초기 재단 수수료 정책입니다.
+///
+/// 합의 상태를 결정하는 값이므로 노드별 환경변수나 실행 옵션으로 바꾸면 안 됩니다.
+/// 주소는 체인 내부 표준인 소문자 Ethereum 주소로 고정합니다.
+pub const FOUNDATION_FEE_ADDRESS: &str = "0x356456ff1216b57a6f8891b195b42d296789b67d";
+pub const FOUNDATION_FEE_BPS: u128 = 2_000;
+pub const FEE_BPS_DENOMINATOR: u128 = 10_000;
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Blockchain {
     pub chain_id: u64,
@@ -254,15 +262,45 @@ fn apply_transactions(
                 .checked_add(tx.amount)
                 .ok_or("받는 계정 잔액이 u128 범위를 넘습니다.")?,
         );
-        let reward = balances.get(producer).copied().unwrap_or(0);
-        balances.insert(
-            producer.to_string(),
-            reward
-                .checked_add(tx.fee)
-                .ok_or("블록 생성자 보상 잔액이 u128 범위를 넘습니다.")?,
-        );
+        // 재단 몫을 먼저 내림 계산하고 나머지 전부를 생성자에게 지급합니다.
+        // 따라서 아주 작은 수수료의 나머지도 소각되거나 유실되지 않습니다.
+        let foundation_fee = tx
+            .fee
+            .checked_mul(FOUNDATION_FEE_BPS)
+            .ok_or("재단 수수료 계산이 u128 범위를 넘습니다.")?
+            / FEE_BPS_DENOMINATOR;
+        let producer_fee = tx.fee - foundation_fee;
+        credit_balance(
+            balances,
+            producer,
+            producer_fee,
+            "블록 생성자 보상 잔액이 u128 범위를 넘습니다.",
+        )?;
+        credit_balance(
+            balances,
+            FOUNDATION_FEE_ADDRESS,
+            foundation_fee,
+            "재단 수수료 잔액이 u128 범위를 넘습니다.",
+        )?;
         nonces.insert(tx.from.clone(), expected_nonce + 1);
     }
+    Ok(())
+}
+
+fn credit_balance(
+    balances: &mut HashMap<Address, u128>,
+    address: &str,
+    amount: u128,
+    overflow_message: &str,
+) -> Result<(), String> {
+    if amount == 0 {
+        return Ok(());
+    }
+    let current = balances.get(address).copied().unwrap_or(0);
+    balances.insert(
+        address.to_string(),
+        current.checked_add(amount).ok_or(overflow_message)?,
+    );
     Ok(())
 }
 

@@ -26,6 +26,8 @@
 | v0.13.1 | 앱 모듈 | 모듈 prefix/router, 결정론적 상태 전이, 상태 migration |
 | v0.14.1 | 운영 기반 | pruning/archive, backup/restore manifest, metrics HTTP |
 | v0.15.1 | 계정 보안 | 다중키, 가중치 권한, 고액 송금·복구 임계값 |
+| v0.15.2 | 저장 엔진 | SQLite WAL, 원자적 batch, 기존 JSON 상태 자동 이관 |
+| v0.16.1 | 수수료 정책 | 검증자 80%, 재단 20%, 소각 0% 합의 분배 |
 
 ## 현재 제한
 

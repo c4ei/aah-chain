@@ -33,7 +33,7 @@ pub mod wallet;
 
 pub use account_security::{AccountKey, AccountPolicy, Authorization, Permission, RecoveryRequest};
 pub use archive::ArchiveStore;
-pub use chain::Blockchain;
+pub use chain::{Blockchain, FEE_BPS_DENOMINATOR, FOUNDATION_FEE_ADDRESS, FOUNDATION_FEE_BPS};
 pub use checkpoint::Checkpoint;
 pub use consensus::{
     BftConsensus, ConsensusMessage, ConsensusPhase, DoubleVoteEvidence, FinalityCertificate,
@@ -85,6 +85,45 @@ mod tests {
         assert_eq!(chain.balance_of(&bob.address()), 250);
         assert_eq!(chain.balance_of(&producer.address()), 3);
         assert!(chain.verify_and_rebuild().is_ok());
+    }
+
+    #[test]
+    fn block_fee_is_split_between_producer_and_foundation() {
+        let alice = Wallet::from_seed([1; 32]);
+        let bob = Wallet::from_seed([2; 32]);
+        let producer = Wallet::from_seed([3; 32]);
+        let mut chain = Blockchain::new(vec![(alice.address(), 10_000)]);
+
+        chain
+            .add_block(
+                vec![alice.sign_transfer(bob.address(), 1_000, 100, 0)],
+                producer.address(),
+            )
+            .unwrap();
+
+        assert_eq!(chain.balance_of(&alice.address()), 8_900);
+        assert_eq!(chain.balance_of(&bob.address()), 1_000);
+        assert_eq!(chain.balance_of(&producer.address()), 80);
+        assert_eq!(chain.balance_of(FOUNDATION_FEE_ADDRESS), 20);
+        assert!(chain.verify_and_rebuild().is_ok());
+    }
+
+    #[test]
+    fn fee_rounding_remainder_is_paid_to_producer() {
+        let alice = Wallet::from_seed([4; 32]);
+        let bob = Wallet::from_seed([5; 32]);
+        let producer = Wallet::from_seed([6; 32]);
+        let mut chain = Blockchain::new(vec![(alice.address(), 100)]);
+
+        chain
+            .add_block(
+                vec![alice.sign_transfer(bob.address(), 10, 3, 0)],
+                producer.address(),
+            )
+            .unwrap();
+
+        assert_eq!(chain.balance_of(&producer.address()), 3);
+        assert_eq!(chain.balance_of(FOUNDATION_FEE_ADDRESS), 0);
     }
 
     #[test]
