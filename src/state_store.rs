@@ -88,9 +88,9 @@ impl StateStore {
 
     pub fn load(&self) -> Result<Option<CanonicalState>, String> {
         let db = EmbeddedDb::open(&self.data_dir)?;
-        if let Some(bytes) = db.get("canonical/current") {
+        if let Some(bytes) = db.get("canonical/current")? {
             let state: CanonicalState =
-                serde_json::from_slice(bytes).map_err(|error| error.to_string())?;
+                serde_json::from_slice(&bytes).map_err(|error| error.to_string())?;
             validate_schema(&state)?;
             return Ok(Some(state));
         }

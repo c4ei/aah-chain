@@ -59,9 +59,11 @@ impl StorageManifest {
         let bytes = serde_json::to_vec_pretty(self).map_err(|error| error.to_string())?;
         fs::write(&temporary, bytes).map_err(|error| error.to_string())?;
         fs::rename(&temporary, &manifest_path).map_err(|error| error.to_string())?;
-        let source = data_dir.as_ref().join("db/ieum-state.db");
+        let source = data_dir.as_ref().join("db/ieum-state.sqlite3");
         if source.exists() {
-            fs::copy(source, destination.join("ieum-state.db"))
+            // WAL의 확정 내용을 본 DB 파일에 반영한 뒤 백업해야 합니다.
+            crate::EmbeddedDb::open(data_dir.as_ref())?.checkpoint()?;
+            fs::copy(source, destination.join("ieum-state.sqlite3"))
                 .map_err(|error| error.to_string())?;
         }
         Ok(manifest_path)

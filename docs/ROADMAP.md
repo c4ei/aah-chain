@@ -95,3 +95,10 @@
 
 외부 보안감사, Byzantine/fuzz/property 테스트, 경제 모델 검증, 키 복구,
 업그레이드 절차, 재해복구 훈련과 관련 법률 검토가 모두 끝나야 합니다.
+# v0.15.2 실제 저장 엔진
+
+- [x] SQLite WAL 기반 실제 key-value 저장
+- [x] 원자적 batch와 schema/generation metadata
+- [x] v0.15.1 JSON image 자동 이관 및 원본 보존
+- [x] WAL checkpoint 기반 backup
+- [ ] 부하 측정 후 필요할 때 검증자 전용 RocksDB backend 검토

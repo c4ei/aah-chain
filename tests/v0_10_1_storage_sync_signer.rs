@@ -15,6 +15,7 @@ fn embedded_state_is_primary_restart_source() {
         EmbeddedDb::open(&root)
             .unwrap()
             .get("canonical/current")
+            .unwrap()
             .is_some()
     );
     let _ = std::fs::remove_dir_all(root);

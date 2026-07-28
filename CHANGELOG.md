@@ -121,3 +121,11 @@
 - 기본 `127.0.0.1:8545`에서 지갑용 JSON-RPC 동시 실행
 - RPC 관련 모듈과 `axum`, BIP-32/39, secp256k1, Keccak 의존성 연결
 - RPC 서버 조기 종료 시 노드가 오류 원인을 반환하도록 처리
+# v0.15.2
+
+- JSON 전체 image 저장소를 실제 SQLite key-value 저장 엔진으로 교체
+- SQLite WAL, `synchronous=FULL`, 5초 busy timeout 및 원자적 batch transaction 적용
+- v0.15.1 `db/ieum-state.db`를 최초 실행 시 자동 이관하고
+  `db/ieum-state.legacy-v1.json`으로 원본 보존
+- backup 전에 WAL checkpoint를 실행하고 `ieum-state.sqlite3`를 복사하도록 변경
+- DB schema/generation metadata 및 prefix scan 테스트 추가
