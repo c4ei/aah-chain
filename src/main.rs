@@ -32,6 +32,41 @@ enum Command {
     Server(NodeArgs),
     /// 일반 PC 노드로 실행하고 운영 서버에 연결합니다.
     Client(ClientArgs),
+    /// 운영 검증자 Ed25519 키와 공개키 설정을 관리합니다.
+    ValidatorKey {
+        #[command(subcommand)]
+        command: ValidatorKeyCommand,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum ValidatorKeyCommand {
+    /// 운영체제 난수로 검증자 개인 seed 파일을 안전하게 생성합니다.
+    Generate {
+        /// 생성할 개인키 파일
+        #[arg(long, default_value = "config/validator.key")]
+        output: PathBuf,
+    },
+    /// 개인 seed 파일에서 validators.json에 넣을 공개키를 출력합니다.
+    Public {
+        /// 읽을 개인키 파일
+        #[arg(long, default_value = "config/validator.key")]
+        key: PathBuf,
+    },
+    /// 공개키 4개 이상으로 모든 노드가 공유할 운영 설정을 생성합니다.
+    CreateConfig {
+        /// 검증자 Ed25519 공개키 32바이트 hex. 검증자 순서대로 반복합니다.
+        #[arg(long = "public-key", required = true, num_args = 4..)]
+        public_keys: Vec<String>,
+
+        /// 각 검증자의 투표권
+        #[arg(long, default_value_t = 100)]
+        voting_power: u64,
+
+        /// 생성할 운영 검증자 설정
+        #[arg(long, default_value = "config/validators.json")]
+        output: PathBuf,
+    },
 }
 
 #[derive(Debug, ClapArgs)]
@@ -131,6 +166,7 @@ fn parse_sync_quorum_peers(value: &str) -> Result<usize, String> {
 async fn main() -> Result<(), String> {
     let args = Args::parse();
     let (mode, mut args, bootstrap_peers, is_client) = match args.command {
+        Some(Command::ValidatorKey { command }) => return run_validator_key_command(command),
         Some(Command::Server(mut args)) => {
             if args.node_key == Path::new("data/node.key") {
                 args.node_key = PathBuf::from("data/server.node.key");
@@ -224,12 +260,21 @@ async fn main() -> Result<(), String> {
         )?
         .into()
     };
-    if !is_client
-        && !validators
-            .iter()
-            .any(|validator| validator.id == local_validator.address())
-    {
-        return Err("검증자 개인키가 config/validators 목록에 없습니다.".into());
+    if !is_client {
+        let configured = validators
+            .get(usize::from(args.validator_index) - 1)
+            .ok_or_else(|| {
+                format!(
+                    "validators 설정에 {}번 검증자가 없습니다.",
+                    args.validator_index
+                )
+            })?;
+        if configured.id != local_validator.address() {
+            return Err(format!(
+                "검증자 개인키 공개키가 validators 설정의 {}번 공개키와 일치하지 않습니다.",
+                args.validator_index
+            ));
+        }
     }
     let local_validator_address = local_validator.address();
     let upgrades = UpgradeSchedule::load("config/upgrades.json")?;
@@ -448,6 +493,34 @@ async fn main() -> Result<(), String> {
                 rpc_task.abort();
                 break;
             }
+        }
+    }
+    Ok(())
+}
+
+fn run_validator_key_command(command: ValidatorKeyCommand) -> Result<(), String> {
+    match command {
+        ValidatorKeyCommand::Generate { output } => {
+            let public_key = ieum_chain::validator_key::generate_key_file(&output)?;
+            println!("검증자 개인키 생성 완료: {}", output.display());
+            println!("공개키: {public_key}");
+            println!("주의: 개인키 파일을 Git에 커밋하거나 다른 서버와 공유하지 마세요.");
+        }
+        ValidatorKeyCommand::Public { key } => {
+            println!("{}", ieum_chain::validator_key::public_key_from_file(&key)?);
+        }
+        ValidatorKeyCommand::CreateConfig {
+            public_keys,
+            voting_power,
+            output,
+        } => {
+            ieum_chain::validator_key::create_validators_config(
+                &output,
+                &public_keys,
+                voting_power,
+            )?;
+            println!("운영 검증자 설정 생성 완료: {}", output.display());
+            println!("검증자 수: {}", public_keys.len());
         }
     }
     Ok(())

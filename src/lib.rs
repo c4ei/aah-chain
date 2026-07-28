@@ -29,6 +29,7 @@ pub mod snapshot_sync;
 pub mod state_store;
 pub mod storage;
 pub mod upgrade;
+pub mod validator_key;
 pub mod wallet;
 
 pub use account_security::{AccountKey, AccountPolicy, Authorization, Permission, RecoveryRequest};
