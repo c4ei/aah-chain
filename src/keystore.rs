@@ -112,7 +112,7 @@ impl Keystore {
 }
 
 fn validate_password(password: &str) -> Result<(), String> {
-    if password.as_bytes().len() < 10 {
+    if password.len() < 10 {
         return Err("keystore 비밀번호는 10자 이상이어야 합니다.".into());
     }
     Ok(())

@@ -1,13 +1,13 @@
-use crate::consensus::{ConsensusMessage, DoubleVoteEvidence, FinalityCertificate, SignedProposal};
+use crate::consensus::{
+    ConsensusMessage, DoubleVoteEvidence, FinalityCertificate, SignedProposal,
+};
 use crate::model::{Block, Transaction};
 use crate::peer_guard::{PeerDecision, PeerGuard};
 use crate::snapshot_sync::SyncTip;
 use futures::StreamExt;
 use libp2p::core::ConnectedPoint;
 use libp2p::{
-    Multiaddr, PeerId, SwarmBuilder, gossipsub, identify,
-    identity::Keypair,
-    kad, mdns,
+    Multiaddr, PeerId, SwarmBuilder, gossipsub, identify, identity::Keypair, kad, mdns,
     multiaddr::Protocol,
     swarm::{ConnectionId, NetworkBehaviour, SwarmEvent},
 };
@@ -75,9 +75,7 @@ pub enum NetworkCommand {
     PublishConsensus(ConsensusMessage),
     PublishProposal(SignedProposal),
     PublishEvidence(DoubleVoteEvidence),
-    RequestSync {
-        from_height: u64,
-    },
+    RequestSync { from_height: u64 },
     RespondSync {
         requester: String,
         tip: SyncTip,
@@ -193,10 +191,7 @@ impl fmt::Display for NetworkEvent {
                     .unwrap_or_else(|| "확인 불가".into())
             ),
             Self::BlockReceived { source, block } => {
-                write!(
-                    formatter,
-                    "[P2P 블록 수신] PeerId: {source}, 블록: {block:?}"
-                )
+                write!(formatter, "[P2P 블록 수신] PeerId: {source}, 블록: {block:?}")
             }
             Self::TransactionReceived {
                 source,
@@ -207,10 +202,7 @@ impl fmt::Display for NetworkEvent {
                 transaction.id()
             ),
             Self::ConsensusReceived { source, message } => {
-                write!(
-                    formatter,
-                    "[P2P 합의 수신] PeerId: {source}, 메시지: {message:?}"
-                )
+                write!(formatter, "[P2P 합의 수신] PeerId: {source}, 메시지: {message:?}")
             }
             Self::ProposalReceived { source, proposal } => write!(
                 formatter,
@@ -257,7 +249,7 @@ enum IeumBehaviourEvent {
     Gossipsub(gossipsub::Event),
     Mdns(mdns::Event),
     Kademlia(kad::Event),
-    Identify(identify::Event),
+    Identify(Box<identify::Event>),
 }
 
 impl From<gossipsub::Event> for IeumBehaviourEvent {
@@ -277,7 +269,7 @@ impl From<kad::Event> for IeumBehaviourEvent {
 }
 impl From<identify::Event> for IeumBehaviourEvent {
     fn from(value: identify::Event) -> Self {
-        Self::Identify(value)
+        Self::Identify(Box::new(value))
     }
 }
 
@@ -468,9 +460,9 @@ async fn dial_address(
     let resolved_addresses = resolve_dns4_addresses(&address).await?;
     for resolved_address in resolved_addresses {
         crate::log_info!("[P2P 접속 시도] {address} -> {resolved_address}");
-        swarm
-            .dial(resolved_address)
-            .map_err(|error| format!("[P2P 접속 시작 실패] 주소: {address}, 오류: {error}"))?;
+        swarm.dial(resolved_address).map_err(|error| {
+            format!("[P2P 접속 시작 실패] 주소: {address}, 오류: {error}")
+        })?;
     }
     Ok(())
 }
@@ -552,16 +544,14 @@ async fn handle_swarm_event(
                 swarm.behaviour_mut().gossipsub.remove_explicit_peer(&peer);
             }
         }
-        SwarmEvent::Behaviour(IeumBehaviourEvent::Identify(identify::Event::Received {
-            peer_id,
-            info,
-            ..
-        })) => {
-            for address in info.listen_addrs {
-                swarm
-                    .behaviour_mut()
-                    .kademlia
-                    .add_address(&peer_id, address);
+        SwarmEvent::Behaviour(IeumBehaviourEvent::Identify(event)) => {
+            if let identify::Event::Received { peer_id, info, .. } = *event {
+                for address in info.listen_addrs {
+                    swarm
+                        .behaviour_mut()
+                        .kademlia
+                        .add_address(&peer_id, address);
+                }
             }
         }
         SwarmEvent::Behaviour(IeumBehaviourEvent::Gossipsub(gossipsub::Event::Message {
@@ -701,7 +691,6 @@ async fn handle_swarm_event(
         // Kademlia 이벤트는 Behaviour 내부에서 이미 상태에 반영됩니다.
         // 값을 명시적으로 소비해 이벤트 필드가 사용되지 않는다는 경고를 피합니다.
         SwarmEvent::Behaviour(IeumBehaviourEvent::Kademlia(_event)) => {}
-        SwarmEvent::Behaviour(IeumBehaviourEvent::Identify(_)) => {}
         _ => {}
     }
     Ok(())
