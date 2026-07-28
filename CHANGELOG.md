@@ -1,5 +1,40 @@
 # 변경 기록
 
+## 0.15.1 - 2026-07-28
+
+- 계정별 다중키와 키별 권한을 추가했습니다.
+- 작업별 가중치 임계값과 고액 송금 별도 임계값을 추가했습니다.
+- 정책 nonce로 오래된 권한 서명의 재사용을 차단합니다.
+- 대기 높이와 복구키 임계값을 사용하는 계정 복구 요청을 추가했습니다.
+- 외부 signer/HSM 경계와 함께 사용할 수 있는 공개키 정책 모델을 추가했습니다.
+
+## 0.14.1 - 2026-07-28
+
+- pruned/archive 운영 모드와 최근 상태·체크포인트 보존 규칙을 추가했습니다.
+- schema·chain id·state root를 포함한 backup/restore manifest를 추가했습니다.
+- `/metrics`, `/healthz` HTTP Router를 추가했습니다.
+- 기존 WAL embedded DB를 유지하고 backend 전환용 manifest 경계를 추가했습니다.
+- RocksDB/SQLite 네이티브 backend는 잠금파일 생성·실컴파일이 가능한 환경에서 후속 적용합니다.
+
+## 0.13.1 - 2026-07-28
+
+- bank/staking/governance/identity/reward 전용 state prefix를 추가했습니다.
+- 합의와 애플리케이션 상태 전이를 분리하는 모듈 trait/router를 추가했습니다.
+- 정렬된 상태 key 기반 결정론적 state root를 추가했습니다.
+- 모듈별 연속 상태 migration 검증을 추가했습니다.
+
+## 0.12.1 - 2026-07-28
+
+- 서명된 nil prevote/precommit을 추가했습니다.
+- 2/3 초과 nil precommit으로 검증하는 round-change certificate를 추가했습니다.
+- era 길이와 활성화 지연을 가진 검증자 세트 관리자를 추가했습니다.
+- 검증자 세트 변경은 지연 후 다음 era 경계에서만 적용합니다.
+
+## 0.11.2 - 2026-07-28
+
+- Rust 1.97 rustfmt/clippy 경고 수정을 기준 소스에 포함했습니다.
+- 신규 코어 기능마다 단위 테스트를 추가하고 패키지·잠금파일 버전을 일치시켰습니다.
+
 ## 0.11.1 - 2026-07-28
 
 - snapshot chunk 병렬 할당, 피어별 timeout·재시도·failover 스케줄러

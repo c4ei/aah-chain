@@ -1,3 +1,5 @@
+use axum::{Router, extract::State, http::StatusCode, response::IntoResponse, routing::get};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 #[derive(Debug, Default)]
@@ -8,6 +10,26 @@ pub struct NodeMetrics {
     consensus_round: AtomicU64,
     signer_failures: AtomicU64,
     snapshot_retries: AtomicU64,
+}
+
+/// 운영망에서는 RPC와 별도 포트에 이 Router를 바인딩합니다.
+pub fn prometheus_router(metrics: Arc<NodeMetrics>) -> Router {
+    Router::new()
+        .route("/metrics", get(metrics_handler))
+        .route("/healthz", get(health_handler))
+        .with_state(metrics)
+}
+
+async fn metrics_handler(State(metrics): State<Arc<NodeMetrics>>) -> impl IntoResponse {
+    (
+        StatusCode::OK,
+        [("content-type", "text/plain; version=0.0.4; charset=utf-8")],
+        metrics.encode_prometheus(),
+    )
+}
+
+async fn health_handler() -> StatusCode {
+    StatusCode::OK
 }
 
 impl NodeMetrics {

@@ -21,6 +21,11 @@
 | v0.9.1 | 테스트넷 구현 | locked/valid value, 단계별 timeout, 이중투표 증거, 실제 4프로세스 시험 |
 | v0.10.1 | 테스트넷 구현 | snapshot chunk 재개, 다중 피어 tip/state root quorum, embedded DB, 외부 signer |
 | v0.11.1 | 테스트넷 기반 | snapshot 병렬 재시도, embedded WAL, signer timeout·HA, metrics 코어 |
+| v0.11.2 | CI 안정화 | Rust 1.97 fmt/clippy 기준과 전체 회귀 검사 |
+| v0.12.1 | 합의 확장 | nil vote, round-change 인증서, 지연된 validator era |
+| v0.13.1 | 앱 모듈 | 모듈 prefix/router, 결정론적 상태 전이, 상태 migration |
+| v0.14.1 | 운영 기반 | pruning/archive, backup/restore manifest, metrics HTTP |
+| v0.15.1 | 계정 보안 | 다중키, 가중치 권한, 고액 송금·복구 임계값 |
 
 ## 현재 제한
 

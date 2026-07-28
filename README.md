@@ -1,9 +1,10 @@
 # IEUM Chain
 
-현재 버전은 `0.10.1`이며, snapshot 재개, 다중 피어 state root 교차검증,
+현재 버전은 `0.15.1`이며, snapshot 재개, 다중 피어 state root 교차검증,
 embedded DB와 외부 signer/HSM 연동 경계를 추가한
 폐쇄형 테스트넷 단계입니다. 자세한 내용은
-`docs/end/20260728_v0.0.10.1_SNAPSHOT_DB_EXTERNAL_SIGNER.md`를 참고하세요.
+단계별 변경은 `docs/end/20260728_v0.0.11.2_CI_STABILIZATION.md`부터
+`docs/end/20260728_v0.0.15.1_WEIGHTED_ACCOUNT_SECURITY.md`까지 참고하세요.
 
 ## 노드와 지갑 RPC 실행
 
@@ -27,7 +28,7 @@ cargo run -- server --port 7001 --allow-insecure-test-keys
 - 기존 `IEUM` geth 네트워크(Chain ID `21133`)와는 별개의 체인입니다.
 
 IEUM Chain을 배우며 확장하는 Rust 기반 경량 블록체인 테스트넷입니다.
-현재 버전은 `0.10.1`이며, 4노드 BFT 확정, snapshot 재개, 다중 피어
+현재 버전은 `0.15.1`이며, 4노드 BFT 확정, snapshot 재개, 다중 피어
 state root 교차검증, embedded DB와 외부 signer 연동 경계를 지원합니다.
 
 > 주의: 학습·사설 테스트넷용 코드입니다. 실제 자산을 맡기는 메인넷에 사용하지 마세요.
@@ -121,5 +122,14 @@ cargo build --release
 ./target/release/ieum-chain server
 ./target/release/ieum-chain
 
-cargo run --release -- client
-cargo run --release -- client
+
+
+cd ~/ieum/ieum-chain
+tar -xJf ieum_chain_v0_0_15_1_changed_only.tar.xz
+
+cargo fmt --all
+cargo fmt --all --check
+cargo clippy --all-targets --all-features --locked -- -D warnings
+cargo test --all-targets --all-features --locked
+cargo build --release --locked
+bash tests/four_process_network.sh target/release/ieum-chain

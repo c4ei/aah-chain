@@ -1,8 +1,10 @@
 pub mod account;
+pub mod account_security;
 pub mod archive;
 pub mod chain;
 pub mod checkpoint;
 pub mod consensus;
+pub mod consensus_era;
 pub mod consensus_runtime;
 pub mod consensus_wal;
 pub mod embedded_db;
@@ -14,8 +16,10 @@ pub mod logger;
 pub mod mempool;
 pub mod metrics;
 pub mod model;
+pub mod modules;
 pub mod network;
 pub mod node_key;
+pub mod operations;
 pub mod peer_guard;
 pub mod raw_transaction;
 pub mod rpc;
@@ -27,12 +31,16 @@ pub mod storage;
 pub mod upgrade;
 pub mod wallet;
 
+pub use account_security::{AccountKey, AccountPolicy, Authorization, Permission, RecoveryRequest};
 pub use archive::ArchiveStore;
 pub use chain::Blockchain;
 pub use checkpoint::Checkpoint;
 pub use consensus::{
     BftConsensus, ConsensusMessage, ConsensusPhase, DoubleVoteEvidence, FinalityCertificate,
     SignedProposal, Validator,
+};
+pub use consensus_era::{
+    EraConfig, EraManager, NilVote, RoundChangeCertificate, ValidatorSetUpdate,
 };
 pub use consensus_runtime::{ConsensusRuntime, ConsensusTimeouts};
 pub use consensus_wal::ConsensusWal;
@@ -42,9 +50,11 @@ pub use finality_store::FinalityStore;
 pub use genesis::GenesisConfig;
 pub use keystore::Keystore;
 pub use mempool::Mempool;
-pub use metrics::NodeMetrics;
+pub use metrics::{NodeMetrics, prometheus_router};
 pub use model::{Block, Transaction};
+pub use modules::{AppModule, ModuleContext, ModuleRouter, StateMigration};
 pub use network::{NetworkCommand, NetworkConfig, NetworkEvent, P2pNode};
+pub use operations::{NodeStorageMode, PruningPolicy, StorageManifest};
 pub use peer_guard::{PeerDecision, PeerGuard};
 pub use rpc::{RpcConfig, RpcNodeHandle, RpcServer};
 pub use signer::{ExternalSigner, ValidatorSigner};

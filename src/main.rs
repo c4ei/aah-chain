@@ -132,17 +132,17 @@ async fn main() -> Result<(), String> {
     let args = Args::parse();
     let (mode, mut args, bootstrap_peers, is_client) = match args.command {
         Some(Command::Server(mut args)) => {
-            if args.node_key == PathBuf::from("data/node.key") {
+            if args.node_key == Path::new("data/node.key") {
                 args.node_key = PathBuf::from("data/server.node.key");
             }
             let peers = std::mem::take(&mut args.peer);
             ("서버", args, peers, false)
         }
         Some(Command::Client(mut client)) => {
-            if client.node.node_key == PathBuf::from("data/node.key") {
+            if client.node.node_key == Path::new("data/node.key") {
                 client.node.node_key = PathBuf::from("data/client.node.key");
             }
-            if client.node.rpc_data_dir == PathBuf::from("data/ledger") {
+            if client.node.rpc_data_dir == Path::new("data/ledger") {
                 client.node.rpc_data_dir = PathBuf::from("data/client-ledger");
             }
             let peers = load_bootstrap_peers(
