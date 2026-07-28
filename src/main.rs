@@ -1,8 +1,8 @@
 use clap::{Args as ClapArgs, Parser, Subcommand};
 use ieum_chain::{
-    ConsensusRuntime, FinalityStore, NetworkCommand, NetworkConfig, NetworkEvent, P2pNode,
-    RpcConfig, RpcServer, UpgradeSchedule, Validator, Wallet, log_error, log_info,
-    logger::init_server_log, node_key::load_or_create_node_key,
+    ConsensusRuntime, ConsensusTimeouts, EvidenceStore, FinalityStore, NetworkCommand,
+    NetworkConfig, NetworkEvent, P2pNode, RpcConfig, RpcServer, UpgradeSchedule, Validator, Wallet,
+    log_error, log_info, logger::init_server_log, node_key::load_or_create_node_key,
 };
 use libp2p::Multiaddr;
 use serde::Deserialize;
@@ -75,6 +75,18 @@ struct NodeArgs {
     #[arg(long, default_value_t = false)]
     allow_insecure_test_keys: bool,
 
+    /// proposal 단계 제한 시간(ms)
+    #[arg(long, default_value_t = 3_000)]
+    propose_timeout_ms: u64,
+
+    /// prevote 단계 제한 시간(ms)
+    #[arg(long, default_value_t = 2_000)]
+    prevote_timeout_ms: u64,
+
+    /// precommit 단계 제한 시간(ms)
+    #[arg(long, default_value_t = 2_000)]
+    precommit_timeout_ms: u64,
+
     /// 서버/클라이언트가 시작할 때 접속할 추가 P2P 주소
     #[arg(long, help = "/dns4/node.ieum.aah.name/udp/7001/quic-v1/p2p/PeerId")]
     peer: Vec<Multiaddr>,
@@ -124,6 +136,9 @@ async fn main() -> Result<(), String> {
                 validator_key: PathBuf::from("config/validator.key"),
                 validators_config: PathBuf::from("config/validators.example.json"),
                 allow_insecure_test_keys: false,
+                propose_timeout_ms: 3_000,
+                prevote_timeout_ms: 2_000,
+                precommit_timeout_ms: 2_000,
                 peer: Vec::new(),
             };
             let peers =
@@ -131,7 +146,13 @@ async fn main() -> Result<(), String> {
             ("일반 PC", node, peers, true)
         }
     };
-    let _instance_guard = acquire_instance_guard(is_client)?;
+    // 서버는 P2P/RPC 포트 자체가 인스턴스 경계이므로 같은 장비에서 여러 검증자를
+    // 실행할 수 있습니다. 일반 PC 클라이언트만 중복 실행을 차단합니다.
+    let _instance_guard = if is_client {
+        Some(acquire_instance_guard(true)?)
+    } else {
+        None
+    };
     if !is_client {
         init_server_log("data/logs/ieum-chain.log")?;
     }
@@ -181,13 +202,22 @@ async fn main() -> Result<(), String> {
         rpc.chain()?.tip_height().saturating_add(1),
         SUPPORTED_PROTOCOL_VERSION,
     )?;
-    let mut consensus = ConsensusRuntime::new(
+    let mut consensus = ConsensusRuntime::with_timeouts(
         rpc.chain()?,
         validators.clone(),
         local_validator,
-        Duration::from_secs(3),
+        ConsensusTimeouts {
+            propose: Duration::from_millis(args.propose_timeout_ms),
+            prevote: Duration::from_millis(args.prevote_timeout_ms),
+            precommit: Duration::from_millis(args.precommit_timeout_ms),
+        },
     )?;
     let finality_store = FinalityStore::new(&args.rpc_data_dir)?;
+    let evidence_store = EvidenceStore::new(&args.rpc_data_dir);
+    let evidence_count = evidence_store.load()?.len();
+    if evidence_count > 0 {
+        log_info!("[BFT 이중투표 증거 복원] {evidence_count}개");
+    }
     let imported = consensus.import_certificate_history(finality_store.load(&validators)?)?;
     if imported > 0 {
         log_info!("[BFT 인증서 복원] {imported}개");
@@ -213,7 +243,7 @@ async fn main() -> Result<(), String> {
                 let timed_out_transactions = consensus.pending_transactions();
                 if consensus.timeout_if_due(std::time::Instant::now())? {
                     rpc.restore_transactions(timed_out_transactions)?;
-                    log_info!("[BFT 라운드 변경] 제안 시간 초과");
+                    log_info!("[BFT 라운드 변경] 단계별 제한 시간 초과, 새 라운드 {}", consensus.round());
                 }
                 if !is_client {
                     upgrades.ensure_supported(
@@ -292,7 +322,22 @@ async fn main() -> Result<(), String> {
                             Ok(None) => {}
                             Err(error) => log_error!("[BFT 투표 거부] {error}"),
                         }
+                        persist_and_publish_evidence(
+                            &mut consensus,
+                            &evidence_store,
+                            &commands,
+                        ).await?;
                         finalize_if_ready(&mut consensus, &rpc, &commands, &finality_store).await?;
+                    }
+                    Some(NetworkEvent::EvidenceReceived { evidence, .. }) => {
+                        let registered = validators
+                            .iter()
+                            .any(|validator| validator.id == evidence.first.validator_id);
+                        if !registered {
+                            log_error!("[BFT 이중투표 증거 거부] 등록되지 않은 검증자");
+                        } else if evidence_store.append(&evidence)? {
+                            log_error!("[BFT 이중투표 증거 저장] {}", evidence.id());
+                        }
                     }
                     Some(NetworkEvent::SyncRequested { requester, from_height, .. }) if !is_client => {
                         commands.send(NetworkCommand::RespondSync {
@@ -349,6 +394,23 @@ async fn main() -> Result<(), String> {
                 rpc_task.abort();
                 break;
             }
+        }
+    }
+    Ok(())
+}
+
+async fn persist_and_publish_evidence(
+    consensus: &mut ConsensusRuntime,
+    evidence_store: &EvidenceStore,
+    commands: &tokio::sync::mpsc::Sender<NetworkCommand>,
+) -> Result<(), String> {
+    for evidence in consensus.take_evidence() {
+        if evidence_store.append(&evidence)? {
+            log_error!("[BFT 이중투표 증거 생성] {}", evidence.id());
+            commands
+                .send(NetworkCommand::PublishEvidence(evidence))
+                .await
+                .map_err(|error| error.to_string())?;
         }
     }
     Ok(())

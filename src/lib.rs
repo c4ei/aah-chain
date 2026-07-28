@@ -4,6 +4,7 @@ pub mod chain;
 pub mod consensus;
 pub mod consensus_runtime;
 pub mod consensus_wal;
+pub mod evidence_store;
 pub mod checkpoint;
 pub mod genesis;
 pub mod finality_store;
@@ -25,9 +26,11 @@ pub use archive::ArchiveStore;
 pub use chain::Blockchain;
 pub use checkpoint::Checkpoint;
 pub use consensus::{
-    BftConsensus, ConsensusMessage, ConsensusPhase, FinalityCertificate, SignedProposal, Validator,
+    BftConsensus, ConsensusMessage, ConsensusPhase, DoubleVoteEvidence, FinalityCertificate,
+    SignedProposal, Validator,
 };
-pub use consensus_runtime::ConsensusRuntime;
+pub use consensus_runtime::{ConsensusRuntime, ConsensusTimeouts};
+pub use evidence_store::EvidenceStore;
 pub use finality_store::FinalityStore;
 pub use consensus_wal::ConsensusWal;
 pub use genesis::GenesisConfig;

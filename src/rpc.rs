@@ -155,12 +155,11 @@ impl RpcServer {
     pub fn new(config: RpcConfig) -> Self {
         // 첫 번째 계정은 개발용 faucet입니다. 실제 운영망에서는 genesis/config와
         // 암호화된 keystore로 교체해야 합니다.
-        let faucet = if cfg!(test) {
-            AccountWallet::from_private_key([42; 32])
-                .expect("테스트 faucet 개인키는 유효해야 합니다.")
-        } else {
-            AccountWallet::new()
-        };
+        // config genesis가 없는 개발망도 모든 프로세스가 같은 genesis/state root로
+        // 시작해야 합니다. 이 공개 개발키는 테스트 전용이며 메인넷에서는 genesis와
+        // 암호화 keystore를 반드시 명시해야 합니다.
+        let faucet = AccountWallet::from_private_key([42; 32])
+            .expect("개발 faucet 개인키는 유효해야 합니다.");
         let chain_id = config
             .genesis
             .as_ref()

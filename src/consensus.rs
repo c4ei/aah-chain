@@ -1,7 +1,7 @@
-use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, HashSet};
 use crate::model::Block;
 use crate::wallet::{verify_signature, Wallet};
+use serde::{Deserialize, Serialize};
+use std::collections::{HashMap, HashSet};
 
 /// 검증자와 투표권입니다. 현재 예제에서는 stake를 투표 가중치로 사용합니다.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -40,23 +40,38 @@ pub struct SignedProposal {
     pub height: u64,
     pub round: u32,
     pub proposer_id: String,
+    /// 제안자가 알고 있는 2/3 초과 prevote 라운드입니다.
+    #[serde(default)]
+    pub valid_round: Option<u32>,
     pub block: Block,
     pub signature: String,
 }
 
 impl SignedProposal {
     pub fn new(height: u64, round: u32, proposer: &Wallet, block: Block) -> Self {
+        Self::with_valid_round(height, round, proposer, block, None)
+    }
+
+    pub fn with_valid_round(
+        height: u64,
+        round: u32,
+        proposer: &Wallet,
+        block: Block,
+        valid_round: Option<u32>,
+    ) -> Self {
         let proposer_id = proposer.address();
         let signature = proposer.sign_bytes(&Self::unsigned_bytes(
             height,
             round,
             &proposer_id,
             &block.hash,
+            valid_round,
         ));
         Self {
             height,
             round,
             proposer_id,
+            valid_round,
             block,
             signature,
         }
@@ -67,12 +82,14 @@ impl SignedProposal {
         round: u32,
         proposer_id: &str,
         block_hash: &str,
+        valid_round: Option<u32>,
     ) -> Vec<u8> {
-        let mut bytes = b"IEUM-PROPOSAL-V1".to_vec();
+        let mut bytes = b"IEUM-PROPOSAL-V2".to_vec();
         bytes.extend_from_slice(&height.to_be_bytes());
         bytes.extend_from_slice(&round.to_be_bytes());
         push_text(&mut bytes, proposer_id);
         push_text(&mut bytes, block_hash);
+        bytes.extend_from_slice(&valid_round.unwrap_or(u32::MAX).to_be_bytes());
         bytes
     }
 
@@ -90,6 +107,7 @@ impl SignedProposal {
                 self.round,
                 &self.proposer_id,
                 &self.block.hash,
+                self.valid_round,
             ),
             &self.signature,
         )
@@ -107,6 +125,42 @@ pub struct ConsensusMessage {
     pub block_hash: String,
     /// validator_id에 해당하는 Ed25519 개인키로 만든 서명입니다.
     pub signature: String,
+}
+
+/// 동일 검증자가 같은 높이·라운드·단계에서 서로 다른 값에 서명한 증거입니다.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DoubleVoteEvidence {
+    pub first: ConsensusMessage,
+    pub second: ConsensusMessage,
+}
+
+impl DoubleVoteEvidence {
+    pub fn new(first: ConsensusMessage, second: ConsensusMessage) -> Result<Self, String> {
+        let evidence = Self { first, second };
+        evidence.verify()?;
+        Ok(evidence)
+    }
+
+    pub fn verify(&self) -> Result<(), String> {
+        self.first.verify()?;
+        self.second.verify()?;
+        if self.first.height != self.second.height
+            || self.first.round != self.second.round
+            || self.first.vote_type != self.second.vote_type
+            || self.first.validator_id != self.second.validator_id
+            || self.first.block_hash == self.second.block_hash
+        {
+            return Err("유효한 이중투표 증거가 아닙니다.".into());
+        }
+        Ok(())
+    }
+
+    pub fn id(&self) -> String {
+        format!(
+            "{}:{}:{}:{:?}",
+            self.first.validator_id, self.first.height, self.first.round, self.first.vote_type
+        )
+    }
 }
 
 /// 확정 블록과 그 블록을 확정한 precommit 증명입니다.
@@ -249,8 +303,8 @@ fn push_text(bytes: &mut Vec<u8>, value: &str) {
 
 /// Tendermint 계열의 propose → prevote → precommit 흐름을 작게 구현한 상태기계입니다.
 ///
-/// 이 코드는 네트워크 학습 및 테스트넷용입니다. 투표 서명과 로컬 WAL은
-/// 구현되어 있지만 잠금 규칙, 라운드 변경, 외부 이중서명 증거와 slashing은
+/// 이 코드는 네트워크 학습 및 테스트넷용입니다. 투표 서명, locked/valid value,
+/// 라운드 변경과 외부 이중서명 증거를 지원합니다. 자동 slashing과 nil vote는
 /// 다음 단계에서 추가합니다.
 #[derive(Clone, Debug)]
 pub struct BftConsensus {
@@ -263,6 +317,12 @@ pub struct BftConsensus {
     votes: HashMap<(VoteType, String), HashSet<String>>,
     /// (높이, 라운드, 투표 종류, 검증자)별 첫 투표를 보관해 이중투표를 거부합니다.
     vote_history: HashMap<(u64, u32, VoteType, String), String>,
+    vote_messages: HashMap<(u64, u32, VoteType, String), ConsensusMessage>,
+    locked_value: Option<String>,
+    locked_round: Option<u32>,
+    valid_value: Option<String>,
+    valid_round: Option<u32>,
+    evidence: Vec<DoubleVoteEvidence>,
     finalized: Option<String>,
 }
 
@@ -288,6 +348,12 @@ impl BftConsensus {
             proposal: None,
             votes: HashMap::new(),
             vote_history: HashMap::new(),
+            vote_messages: HashMap::new(),
+            locked_value: None,
+            locked_round: None,
+            valid_value: None,
+            valid_round: None,
+            evidence: Vec::new(),
             finalized: None,
         })
     }
@@ -295,6 +361,12 @@ impl BftConsensus {
     pub fn start_round(&mut self, height: u64, round: u32) -> Result<(), String> {
         if height < self.height || (height == self.height && round < self.round) {
             return Err("과거 높이 또는 과거 라운드로 돌아갈 수 없습니다.".into());
+        }
+        if height > self.height {
+            self.locked_value = None;
+            self.locked_round = None;
+            self.valid_value = None;
+            self.valid_round = None;
         }
         self.height = height;
         self.round = round;
@@ -336,6 +408,18 @@ impl BftConsensus {
             return Err("등록되지 않은 검증자의 제안입니다.".into());
         }
         proposal.verify()?;
+        if let Some(locked_value) = self.locked_value.as_deref()
+            && locked_value != proposal.block.hash
+        {
+            let unlock_allowed = proposal.valid_round.is_some_and(|valid_round| {
+                self.locked_round.is_some_and(|locked_round| valid_round >= locked_round)
+                    && self.valid_round == Some(valid_round)
+                    && self.valid_value.as_deref() == Some(proposal.block.hash.as_str())
+            });
+            if !unlock_allowed {
+                return Err("잠긴 값과 다른 제안이며 유효한 valid_round 증명이 없습니다.".into());
+            }
+        }
         self.propose(&proposal.proposer_id, &proposal.block.hash)
     }
 
@@ -364,11 +448,19 @@ impl BftConsensus {
         );
         if let Some(previous_hash) = self.vote_history.get(&history_key) {
             if previous_hash != &message.block_hash {
+                if let Some(first) = self.vote_messages.get(&history_key)
+                    && let Ok(evidence) =
+                        DoubleVoteEvidence::new(first.clone(), message.clone())
+                    && !self.evidence.iter().any(|known| known.id() == evidence.id())
+                {
+                    self.evidence.push(evidence);
+                }
                 return Err("동일 높이·라운드에서 서로 다른 블록에 이중투표했습니다.".into());
             }
         } else {
             self.vote_history
-                .insert(history_key, message.block_hash.clone());
+                .insert(history_key.clone(), message.block_hash.clone());
+            self.vote_messages.insert(history_key, message.clone());
         }
         if self.proposal.as_deref() != Some(message.block_hash.as_str()) {
             return Err("현재 제안과 다른 블록에 대한 투표입니다.".into());
@@ -379,7 +471,11 @@ impl BftConsensus {
         if self.has_quorum(&key) && self.phase != ConsensusPhase::Finalized {
             match message.vote_type {
                 VoteType::Prevote if self.phase == ConsensusPhase::Prevote => {
-                    self.phase = ConsensusPhase::Precommit
+                    self.valid_value = Some(message.block_hash.clone());
+                    self.valid_round = Some(self.round);
+                    self.locked_value = Some(message.block_hash.clone());
+                    self.locked_round = Some(self.round);
+                    self.phase = ConsensusPhase::Precommit;
                 }
                 VoteType::Precommit => {
                     self.phase = ConsensusPhase::Finalized;
@@ -409,6 +505,20 @@ impl BftConsensus {
 
     pub fn round(&self) -> u32 {
         self.round
+    }
+
+    pub fn locked_value(&self) -> Option<(&str, u32)> {
+        self.locked_value
+            .as_deref()
+            .zip(self.locked_round)
+    }
+
+    pub fn valid_value(&self) -> Option<(&str, u32)> {
+        self.valid_value.as_deref().zip(self.valid_round)
+    }
+
+    pub fn take_evidence(&mut self) -> Vec<DoubleVoteEvidence> {
+        std::mem::take(&mut self.evidence)
     }
 
     /// 제한 시간 안에 합의하지 못하면 같은 높이의 다음 라운드를 시작합니다.

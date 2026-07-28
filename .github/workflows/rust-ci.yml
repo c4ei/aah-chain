@@ -43,3 +43,6 @@ jobs:
 
       - name: Build release binary
         run: cargo build --release --locked
+
+      - name: Run real four-process BFT network
+        run: bash tests/four_process_network.sh target/release/ieum-chain

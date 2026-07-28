@@ -1,5 +1,13 @@
 # 변경 기록
 
+## 0.9.1 - 2026-07-28
+
+- Tendermint 계열 locked value / valid value 및 valid round 제안 규칙
+- propose, prevote, precommit 단계별 timeout
+- 서명된 외부 이중투표 증거 검증·영속 저장·P2P 전파
+- 실제 QUIC P2P 네 개 프로세스의 높이·state root 통합 테스트
+- 동일한 개발 제네시스를 위한 결정론적 테스트 faucet
+
 ## 0.8.2 - 2026-07-28
 
 - 동기화 응답 누적 바이트를 `usize`로 명시해 Rust 숫자 타입 추론 오류를 제거했습니다.

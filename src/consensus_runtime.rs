@@ -1,11 +1,36 @@
 use crate::chain::Blockchain;
 use crate::consensus::{
-    BftConsensus, ConsensusMessage, ConsensusPhase, FinalityCertificate, SignedProposal, Validator,
-    VoteType,
+    BftConsensus, ConsensusMessage, ConsensusPhase, DoubleVoteEvidence, FinalityCertificate,
+    SignedProposal, Validator, VoteType,
 };
 use crate::model::Block;
 use crate::wallet::Wallet;
 use std::time::{Duration, Instant};
+
+#[derive(Clone, Copy, Debug)]
+pub struct ConsensusTimeouts {
+    pub propose: Duration,
+    pub prevote: Duration,
+    pub precommit: Duration,
+}
+
+impl ConsensusTimeouts {
+    pub fn uniform(timeout: Duration) -> Self {
+        Self {
+            propose: timeout,
+            prevote: timeout,
+            precommit: timeout,
+        }
+    }
+
+    fn for_phase(self, phase: ConsensusPhase) -> Duration {
+        match phase {
+            ConsensusPhase::Waiting | ConsensusPhase::Propose => self.propose,
+            ConsensusPhase::Prevote => self.prevote,
+            ConsensusPhase::Precommit | ConsensusPhase::Finalized => self.precommit,
+        }
+    }
+}
 
 /// P2P 어댑터와 독립적으로 테스트 가능한 실제 합의 실행 코어입니다.
 /// 후보 블록은 메모리에만 보관하고 2/3 초과 precommit 뒤에만 체인에 저장합니다.
@@ -14,8 +39,9 @@ pub struct ConsensusRuntime {
     consensus: BftConsensus,
     validator: Wallet,
     pending: Option<Block>,
+    valid_block: Option<Block>,
     deadline: Instant,
-    timeout: Duration,
+    timeouts: ConsensusTimeouts,
     validators: Vec<Validator>,
     precommits: Vec<ConsensusMessage>,
     finalized: Vec<FinalityCertificate>,
@@ -29,16 +55,32 @@ impl ConsensusRuntime {
         validator: Wallet,
         timeout: Duration,
     ) -> Result<Self, String> {
+        Self::with_timeouts(
+            chain,
+            validators,
+            validator,
+            ConsensusTimeouts::uniform(timeout),
+        )
+    }
+
+    pub fn with_timeouts(
+        chain: Blockchain,
+        validators: Vec<Validator>,
+        validator: Wallet,
+        timeouts: ConsensusTimeouts,
+    ) -> Result<Self, String> {
         let next_height = chain.blocks.last().map(|b| b.height + 1).unwrap_or(1);
         let mut consensus = BftConsensus::new(validators.clone())?;
         consensus.start_round(next_height, 0)?;
+        let deadline = Instant::now() + timeouts.propose;
         Ok(Self {
             chain,
             consensus,
             validator,
             pending: None,
-            deadline: Instant::now() + timeout,
-            timeout,
+            valid_block: None,
+            deadline,
+            timeouts,
             validators,
             precommits: Vec::new(),
             finalized: Vec::new(),
@@ -50,11 +92,23 @@ impl ConsensusRuntime {
         if self.validator.address() != self.consensus.expected_proposer() {
             return Err("이 노드는 현재 라운드 제안자가 아닙니다.".into());
         }
-        Ok(SignedProposal::new(
+        let (block, valid_round) = match (
+            self.valid_block.as_ref(),
+            self.consensus.valid_value(),
+        ) {
+            (Some(valid_block), Some((valid_hash, valid_round)))
+                if valid_block.hash == valid_hash =>
+            {
+                (valid_block.clone(), Some(valid_round))
+            }
+            _ => (block, None),
+        };
+        Ok(SignedProposal::with_valid_round(
             block.height,
             self.consensus.round(),
             &self.validator,
             block,
+            valid_round,
         ))
     }
 
@@ -74,7 +128,7 @@ impl ConsensusRuntime {
         }
         self.consensus.handle_proposal(&proposal)?;
         self.pending = Some(proposal.block.clone());
-        self.deadline = Instant::now() + self.timeout;
+        self.reset_deadline();
         Ok(ConsensusMessage::prevote(
             proposal.height,
             proposal.round,
@@ -87,6 +141,8 @@ impl ConsensusRuntime {
         &mut self,
         vote: ConsensusMessage,
     ) -> Result<Option<ConsensusMessage>, String> {
+        let previous_phase = self.consensus.phase();
+        self.consensus.handle(vote.clone())?;
         if vote.vote_type == VoteType::Precommit
             && !self.precommits.iter().any(|existing| {
                 existing.height == vote.height
@@ -94,9 +150,16 @@ impl ConsensusRuntime {
                     && existing.validator_id == vote.validator_id
             })
         {
-            self.precommits.push(vote.clone());
+            self.precommits.push(vote);
         }
-        self.consensus.handle(vote)?;
+        if previous_phase != self.consensus.phase() {
+            if previous_phase == ConsensusPhase::Prevote
+                && self.consensus.phase() == ConsensusPhase::Precommit
+            {
+                self.valid_block = self.pending.clone();
+            }
+            self.reset_deadline();
+        }
         if self.consensus.phase() == ConsensusPhase::Precommit {
             let block_hash = self
                 .pending
@@ -140,7 +203,7 @@ impl ConsensusRuntime {
         self.consensus.on_timeout()?;
         self.pending = None;
         self.precommits.clear();
-        self.deadline = now + self.timeout;
+        self.deadline = now + self.timeouts.propose;
         Ok(true)
     }
 
@@ -154,6 +217,10 @@ impl ConsensusRuntime {
     pub fn force_timeout_for_test(&mut self) -> Result<u32, String> {
         self.pending = None;
         self.consensus.on_timeout()
+    }
+
+    pub fn take_evidence(&mut self) -> Vec<DoubleVoteEvidence> {
+        self.consensus.take_evidence()
     }
 
     /// 현재 확정 높이 뒤의 블록만 제공하며 한 응답을 128개로 제한합니다.
@@ -253,8 +320,9 @@ impl ConsensusRuntime {
             let next_height = self.chain.blocks.last().unwrap().height + 1;
             self.consensus.start_round(next_height, 0)?;
             self.pending = None;
+            self.valid_block = None;
             self.precommits.clear();
-            self.deadline = Instant::now() + self.timeout;
+            self.reset_deadline();
         }
         Ok(applied)
     }
@@ -267,8 +335,9 @@ impl ConsensusRuntime {
         let next_height = self.chain.blocks.last().unwrap().height + 1;
         self.consensus.start_round(next_height, 0)?;
         self.pending = None;
+        self.valid_block = None;
         self.precommits.clear();
-        self.deadline = Instant::now() + self.timeout;
+        self.reset_deadline();
         Ok(())
     }
 
@@ -295,5 +364,17 @@ impl ConsensusRuntime {
 
     pub fn round(&self) -> u32 {
         self.consensus.round()
+    }
+
+    pub fn locked_value(&self) -> Option<(&str, u32)> {
+        self.consensus.locked_value()
+    }
+
+    pub fn valid_value(&self) -> Option<(&str, u32)> {
+        self.consensus.valid_value()
+    }
+
+    fn reset_deadline(&mut self) {
+        self.deadline = Instant::now() + self.timeouts.for_phase(self.consensus.phase());
     }
 }

@@ -1,4 +1,6 @@
-use crate::consensus::{ConsensusMessage, FinalityCertificate, SignedProposal};
+use crate::consensus::{
+    ConsensusMessage, DoubleVoteEvidence, FinalityCertificate, SignedProposal,
+};
 use crate::model::{Block, Transaction};
 use crate::peer_guard::{PeerDecision, PeerGuard};
 use futures::StreamExt;
@@ -52,6 +54,7 @@ pub enum WireMessage {
     Transaction(Transaction),
     Proposal(SignedProposal),
     Consensus(ConsensusMessage),
+    Evidence(DoubleVoteEvidence),
     SyncRequest {
         requester: String,
         from_height: u64,
@@ -70,6 +73,7 @@ pub enum NetworkCommand {
     PublishTransaction(Transaction),
     PublishConsensus(ConsensusMessage),
     PublishProposal(SignedProposal),
+    PublishEvidence(DoubleVoteEvidence),
     RequestSync { from_height: u64 },
     RespondSync {
         requester: String,
@@ -122,6 +126,10 @@ pub enum NetworkEvent {
     ProposalReceived {
         source: PeerId,
         proposal: SignedProposal,
+    },
+    EvidenceReceived {
+        source: PeerId,
+        evidence: DoubleVoteEvidence,
     },
     SyncRequested {
         source: PeerId,
@@ -199,6 +207,11 @@ impl fmt::Display for NetworkEvent {
                 formatter,
                 "[P2P 제안 수신] PeerId: {source}, 높이: {}, 해시: {}",
                 proposal.height, proposal.block.hash
+            ),
+            Self::EvidenceReceived { source, evidence } => write!(
+                formatter,
+                "[P2P 이중투표 증거] PeerId: {source}, 증거: {}",
+                evidence.id()
             ),
             Self::SyncRequested {
                 source,
@@ -362,6 +375,9 @@ impl P2pNode {
                             }
                             Some(NetworkCommand::PublishProposal(proposal)) => {
                                 publish(&mut swarm, CONSENSUS_TOPIC, &WireMessage::Proposal(proposal));
+                            }
+                            Some(NetworkCommand::PublishEvidence(evidence)) => {
+                                publish(&mut swarm, CONSENSUS_TOPIC, &WireMessage::Evidence(evidence));
                             }
                             Some(NetworkCommand::RequestSync { from_height }) => {
                                 publish(
@@ -579,6 +595,10 @@ async fn handle_swarm_event(
                 WireMessage::Proposal(proposal) => NetworkEvent::ProposalReceived {
                     source: propagation_source,
                     proposal,
+                },
+                WireMessage::Evidence(evidence) => NetworkEvent::EvidenceReceived {
+                    source: propagation_source,
+                    evidence,
                 },
                 WireMessage::SyncRequest {
                     requester,
