@@ -1,13 +1,14 @@
 # IEUM Chain
 
-현재 버전은 `0.7.1`이며, 실제 P2P proposal/prevote/precommit과 확정 인증서 기반
-신규 노드 동기화를 연결한 4노드 폐쇄형 테스트넷 단계입니다. 운영 절차와 제한은
-`docs/end/20260728_v0.0.7.1_4NODE_BFT_SYNC.md`를 참고하세요.
+현재 버전은 `0.8.1`이며, 실제 BFT 확정·인증서 동기화에 canonical 포크 규칙,
+원자적 상태 저장, 암호화 사용자 keystore, mempool 정책, 운영 RPC와 높이 기반
+업그레이드 규칙을 추가한 폐쇄형 테스트넷 단계입니다. 자세한 내용은
+`docs/end/20260728_v0.0.8.1_GETH_PRIORITY_HIGH.md`를 참고하세요.
 
 ## 노드와 지갑 RPC 실행
 
 ```bash
-cargo run -- server --port 7001
+cargo run -- server --port 7001 --allow-insecure-test-keys
 ```
 
 - `--port`: 노드 간 QUIC/P2P UDP 포트
@@ -26,8 +27,8 @@ cargo run -- server --port 7001
 - 기존 `IEUM` geth 네트워크(Chain ID `21133`)와는 별개의 체인입니다.
 
 IEUM Chain을 배우며 확장하는 Rust 기반 경량 블록체인 테스트넷입니다.
-현재 버전은 `0.7.1`이며, 옵션 없는 클라이언트 실행, 자동 부트스트랩 연결,
-4노드 BFT 확정 및 확정 인증서 기반 신규 노드 동기화를 지원합니다.
+현재 버전은 `0.8.1`이며, 자동 부트스트랩 연결, 4노드 BFT 확정, 인증서 동기화,
+확정 상태 root·인덱스 저장과 실제 동기화/피어 운영 상태 조회를 지원합니다.
 
 > 주의: 학습·사설 테스트넷용 코드입니다. 실제 자산을 맡기는 메인넷에 사용하지 마세요.
 

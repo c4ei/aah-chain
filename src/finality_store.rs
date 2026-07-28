@@ -51,6 +51,16 @@ impl FinalityStore {
             certificates.push(certificate);
         }
         certificates.sort_by_key(|certificate| certificate.block.height);
+        for pair in certificates.windows(2) {
+            if pair[0].block.height == pair[1].block.height
+                && pair[0].block.hash != pair[1].block.hash
+            {
+                return Err(format!(
+                    "확정성 위반: 높이 {}의 인증서 해시가 서로 다릅니다.",
+                    pair[0].block.height
+                ));
+            }
+        }
         Ok(certificates)
     }
 }

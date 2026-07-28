@@ -65,6 +65,12 @@ impl AccountWallet {
         ethereum_address(self.signing_key.verifying_key())
     }
 
+    /// 암호화 keystore 저장 직전에만 사용하는 개인키 바이트입니다.
+    /// 호출자는 평문을 파일·로그·RPC 응답에 남기면 안 됩니다.
+    pub(crate) fn private_key_bytes(&self) -> [u8; 32] {
+        self.signing_key.to_bytes().into()
+    }
+
     /// 내부 IEUM 거래 서명은 공개키와 ECDSA 서명을 함께 담습니다.
     ///
     /// 주소와 키는 geth 호환이지만 이 직렬화는 Ethereum RLP raw transaction이 아닙니다.

@@ -8,6 +8,7 @@ pub mod checkpoint;
 pub mod genesis;
 pub mod finality_store;
 pub mod logger;
+pub mod keystore;
 pub mod mempool;
 pub mod model;
 pub mod network;
@@ -16,6 +17,8 @@ pub mod peer_guard;
 pub mod raw_transaction;
 pub mod rpc;
 pub mod storage;
+pub mod state_store;
+pub mod upgrade;
 pub mod wallet;
 
 pub use archive::ArchiveStore;
@@ -29,11 +32,14 @@ pub use finality_store::FinalityStore;
 pub use consensus_wal::ConsensusWal;
 pub use genesis::GenesisConfig;
 pub use mempool::Mempool;
+pub use keystore::Keystore;
 pub use model::{Block, Transaction};
 pub use network::{NetworkCommand, NetworkConfig, NetworkEvent, P2pNode};
 pub use peer_guard::{PeerDecision, PeerGuard};
 pub use rpc::{RpcConfig, RpcNodeHandle, RpcServer};
 pub use wallet::Wallet;
+pub use state_store::{CanonicalState, StateStore};
+pub use upgrade::{ProtocolUpgrade, UpgradeSchedule};
 
 #[cfg(test)]
 mod tests {

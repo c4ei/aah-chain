@@ -58,6 +58,7 @@ pub enum WireMessage {
     },
     SyncResponse {
         requester: String,
+        highest_height: u64,
         certificates: Vec<FinalityCertificate>,
     },
 }
@@ -72,6 +73,7 @@ pub enum NetworkCommand {
     RequestSync { from_height: u64 },
     RespondSync {
         requester: String,
+        highest_height: u64,
         certificates: Vec<FinalityCertificate>,
     },
     Dial(Multiaddr),
@@ -128,6 +130,7 @@ pub enum NetworkEvent {
     },
     SyncReceived {
         source: PeerId,
+        highest_height: u64,
         certificates: Vec<FinalityCertificate>,
     },
 }
@@ -208,6 +211,7 @@ impl fmt::Display for NetworkEvent {
             Self::SyncReceived {
                 source,
                 certificates,
+                ..
             } => write!(
                 formatter,
                 "[P2P 동기화 응답] PeerId: {source}, 확정 블록: {}개",
@@ -369,12 +373,13 @@ impl P2pNode {
                                     },
                                 );
                             }
-                            Some(NetworkCommand::RespondSync { requester, certificates }) => {
+                            Some(NetworkCommand::RespondSync { requester, highest_height, certificates }) => {
                                 publish(
                                     &mut swarm,
                                     SYNC_TOPIC,
                                     &WireMessage::SyncResponse {
                                         requester,
+                                        highest_height,
                                         certificates,
                                     },
                                 );
@@ -585,6 +590,7 @@ async fn handle_swarm_event(
                 },
                 WireMessage::SyncResponse {
                     requester,
+                    highest_height,
                     certificates,
                 } => {
                     if requester != swarm.local_peer_id().to_string() {
@@ -592,6 +598,7 @@ async fn handle_swarm_event(
                     }
                     NetworkEvent::SyncReceived {
                         source: propagation_source,
+                        highest_height,
                         certificates,
                     }
                 }

@@ -211,7 +211,8 @@ impl ConsensusRuntime {
                 imported += 1;
             }
         }
-        self.finalized.sort_by_key(|certificate| certificate.block.height);
+        self.finalized
+            .sort_by_key(|certificate| certificate.block.height);
         Ok(imported)
     }
 
@@ -229,6 +230,16 @@ impl ConsensusRuntime {
             certificate.verify(&self.validators)?;
             let next = self.chain.blocks.last().unwrap().height + 1;
             if certificate.block.height < next {
+                let canonical = self
+                    .chain
+                    .block_by_height(certificate.block.height)
+                    .ok_or("기존 canonical 블록을 찾을 수 없습니다.")?;
+                if canonical.hash != certificate.block.hash {
+                    return Err(format!(
+                        "확정성 위반: 높이 {}에 서로 다른 2/3 인증서가 존재합니다.",
+                        certificate.block.height
+                    ));
+                }
                 continue;
             }
             if certificate.block.height != next {
@@ -280,5 +291,9 @@ impl ConsensusRuntime {
 
     pub fn phase(&self) -> ConsensusPhase {
         self.consensus.phase()
+    }
+
+    pub fn round(&self) -> u32 {
+        self.consensus.round()
     }
 }

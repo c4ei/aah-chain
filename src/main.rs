@@ -1,7 +1,7 @@
 use clap::{Args as ClapArgs, Parser, Subcommand};
 use ieum_chain::{
     ConsensusRuntime, FinalityStore, NetworkCommand, NetworkConfig, NetworkEvent, P2pNode,
-    RpcConfig, RpcServer, Validator, Wallet, log_error, log_info,
+    RpcConfig, RpcServer, UpgradeSchedule, Validator, Wallet, log_error, log_info,
     logger::init_server_log, node_key::load_or_create_node_key,
 };
 use libp2p::Multiaddr;
@@ -16,6 +16,7 @@ const DEFAULT_BOOTSTRAP_CONFIG: &str = "config/bootstrap.json";
 const DEFAULT_BOOTSTRAP_PEER: &str = "/dns4/node.ieum.aah.name/udp/7001/quic-v1/p2p/12D3KooWAVRZjnbP8nXp8vD6irYFAXdLJVyczEFWdKLFzKnKDATx";
 const SERVER_INSTANCE_PORT: u16 = 49_889;
 const CLIENT_INSTANCE_PORT: u16 = 49_890;
+const SUPPORTED_PROTOCOL_VERSION: u32 = 1;
 
 #[derive(Debug, Parser)]
 #[command(name = "ieum-chain", version, about = "가벼운 IEUM 테스트넷 노드")]
@@ -61,6 +62,18 @@ struct NodeArgs {
     /// 4노드 테스트넷 검증자 번호(1~4). server에서만 사용합니다.
     #[arg(long, default_value_t = 1, value_parser = clap::value_parser!(u8).range(1..=4))]
     validator_index: u8,
+
+    /// 운영 검증자 Ed25519 seed 32바이트 hex 파일
+    #[arg(long, default_value = "config/validator.key")]
+    validator_key: PathBuf,
+
+    /// 검증자 공개키와 투표권 설정
+    #[arg(long, default_value = "config/validators.example.json")]
+    validators_config: PathBuf,
+
+    /// 폐쇄형 개발망에서만 고정 검증자 키를 허용합니다.
+    #[arg(long, default_value_t = false)]
+    allow_insecure_test_keys: bool,
 
     /// 서버/클라이언트가 시작할 때 접속할 추가 P2P 주소
     #[arg(long, help = "/dns4/node.ieum.aah.name/udp/7001/quic-v1/p2p/PeerId")]
@@ -108,6 +121,9 @@ async fn main() -> Result<(), String> {
                 rpc_data_dir: PathBuf::from("data/client-ledger"),
                 node_key: PathBuf::from("data/client.node.key"),
                 validator_index: 1,
+                validator_key: PathBuf::from("config/validator.key"),
+                validators_config: PathBuf::from("config/validators.example.json"),
+                allow_insecure_test_keys: false,
                 peer: Vec::new(),
             };
             let peers =
@@ -142,14 +158,29 @@ async fn main() -> Result<(), String> {
     let rpc_server = RpcServer::new(rpc_config);
     let rpc = rpc_server.node_handle();
     let mut rpc_task = tokio::spawn(rpc_server.run());
-    let validator_wallets: Vec<_> = (1_u8..=4)
-        .map(|index| Wallet::from_seed(testnet_validator_seed(index)))
-        .collect();
-    let validators = validator_wallets
-        .iter()
-        .map(|wallet| Validator::new(wallet.address(), 100))
-        .collect::<Vec<_>>();
-    let local_validator = Wallet::from_seed(testnet_validator_seed(args.validator_index));
+    let validators = load_validators(&args.validators_config)?;
+    let local_validator = if is_client {
+        Wallet::new()
+    } else {
+        load_validator_wallet(
+            &args.validator_key,
+            args.validator_index,
+            args.allow_insecure_test_keys,
+        )?
+    };
+    if !is_client
+        && !validators
+            .iter()
+            .any(|validator| validator.id == local_validator.address())
+    {
+        return Err("검증자 개인키가 config/validators 목록에 없습니다.".into());
+    }
+    let local_validator_address = local_validator.address();
+    let upgrades = UpgradeSchedule::load("config/upgrades.json")?;
+    upgrades.ensure_supported(
+        rpc.chain()?.tip_height().saturating_add(1),
+        SUPPORTED_PROTOCOL_VERSION,
+    )?;
     let mut consensus = ConsensusRuntime::new(
         rpc.chain()?,
         validators.clone(),
@@ -185,6 +216,10 @@ async fn main() -> Result<(), String> {
                     log_info!("[BFT 라운드 변경] 제안 시간 초과");
                 }
                 if !is_client {
+                    upgrades.ensure_supported(
+                        consensus.chain.tip_height().saturating_add(1),
+                        SUPPORTED_PROTOCOL_VERSION,
+                    )?;
                     let pending = rpc.drain_transactions(1_000)?;
                     if !pending.is_empty() {
                         let previous = consensus.chain.blocks.last().unwrap();
@@ -192,7 +227,7 @@ async fn main() -> Result<(), String> {
                             previous.height + 1,
                             previous.hash.clone(),
                             unix_timestamp(),
-                            validator_wallets[(args.validator_index - 1) as usize].address(),
+                            local_validator_address.clone(),
                             pending.clone(),
                         );
                         match consensus.make_proposal(block) {
@@ -226,6 +261,7 @@ async fn main() -> Result<(), String> {
             event = events.recv() => {
                 match event {
                     Some(NetworkEvent::PeerConnected { peer_id: connected, remote_address, remote_ip, direction, connection_id, current_connections }) => {
+                        rpc.set_peer_count(current_connections)?;
                         log_info!("{}", NetworkEvent::PeerConnected { peer_id: connected, remote_address, remote_ip, direction, connection_id, current_connections });
                         commands.send(NetworkCommand::RequestSync {
                             from_height: consensus.chain.tip_height() + 1,
@@ -261,10 +297,12 @@ async fn main() -> Result<(), String> {
                     Some(NetworkEvent::SyncRequested { requester, from_height, .. }) if !is_client => {
                         commands.send(NetworkCommand::RespondSync {
                             requester,
+                            highest_height: consensus.chain.tip_height(),
                             certificates: consensus.certificates_from(from_height),
                         }).await.map_err(|e| e.to_string())?;
                     }
-                    Some(NetworkEvent::SyncReceived { certificates, .. }) => {
+                    Some(NetworkEvent::SyncReceived { highest_height, certificates, .. }) => {
+                        rpc.begin_sync(highest_height)?;
                         let mut applied = 0;
                         for certificate in certificates {
                             let chain_before = consensus.chain.clone();
@@ -285,6 +323,19 @@ async fn main() -> Result<(), String> {
                                 from_height: consensus.chain.tip_height() + 1,
                             }).await.map_err(|e| e.to_string())?;
                         }
+                    }
+                    Some(NetworkEvent::PeerDisconnected { peer_id, remote_address, remote_ip, direction, connection_id, connected_for, current_connections, cause }) => {
+                        rpc.set_peer_count(current_connections)?;
+                        log_info!("{}", NetworkEvent::PeerDisconnected {
+                            peer_id,
+                            remote_address,
+                            remote_ip,
+                            direction,
+                            connection_id,
+                            connected_for,
+                            current_connections,
+                            cause,
+                        });
                     }
                     Some(event) => log_info!("{event}"),
                     None => {
@@ -334,6 +385,51 @@ async fn finalize_if_ready(
 
 fn testnet_validator_seed(index: u8) -> [u8; 32] {
     [index; 32]
+}
+
+fn load_validator_wallet(
+    path: &Path,
+    index: u8,
+    allow_insecure_test_keys: bool,
+) -> Result<Wallet, String> {
+    if allow_insecure_test_keys {
+        log_info!(
+            "[경고] 고정 개발 검증자 키 {}번을 사용합니다. 실제 자산을 넣지 마세요.",
+            index
+        );
+        return Ok(Wallet::from_seed(testnet_validator_seed(index)));
+    }
+    let value = fs::read_to_string(path).map_err(|error| {
+        format!(
+            "검증자 키 파일을 읽지 못했습니다({}): {error}. 개발망이면 --allow-insecure-test-keys를 명시하세요.",
+            path.display()
+        )
+    })?;
+    let seed: [u8; 32] = hex::decode(value.trim().trim_start_matches("0x"))
+        .map_err(|_| "검증자 키 파일은 32바이트 hex여야 합니다.")?
+        .try_into()
+        .map_err(|_| "검증자 키 파일은 정확히 32바이트여야 합니다.")?;
+    Ok(Wallet::from_seed(seed))
+}
+
+#[derive(Debug, Deserialize)]
+struct ValidatorConfig {
+    chain_id: String,
+    validators: Vec<Validator>,
+}
+
+fn load_validators(path: &Path) -> Result<Vec<Validator>, String> {
+    let text = fs::read_to_string(path)
+        .map_err(|error| format!("검증자 설정 읽기 실패({}): {error}", path.display()))?;
+    let config: ValidatorConfig = serde_json::from_str(&text)
+        .map_err(|error| format!("검증자 설정 형식 오류({}): {error}", path.display()))?;
+    if config.chain_id != "21004" {
+        return Err("검증자 설정 chain_id는 21004여야 합니다.".into());
+    }
+    if config.validators.len() < 4 {
+        return Err("BFT 검증자는 최소 4개가 필요합니다.".into());
+    }
+    Ok(config.validators)
 }
 
 fn unix_timestamp() -> u64 {

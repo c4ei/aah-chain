@@ -1,5 +1,8 @@
 use crate::model::{Block, Transaction};
-use crate::{ArchiveStore, Blockchain, GenesisConfig, Mempool, account::AccountWallet};
+use crate::{
+    ArchiveStore, Blockchain, GenesisConfig, Keystore, Mempool, StateStore,
+    account::AccountWallet,
+};
 use axum::{Json, Router, routing::post};
 use serde_json::{Value, json};
 use std::collections::HashMap;
@@ -39,6 +42,13 @@ struct RpcState {
     faucet_alias: String,
     chain_id: u64,
     archive: ArchiveStore,
+    keystore: Keystore,
+    state_store: StateStore,
+    peer_count: usize,
+    sync_current: u64,
+    sync_highest: u64,
+    sync_active: bool,
+    started_at: std::time::Instant,
 }
 
 /// 기존 geth 스크립트에서 자주 쓰는 계정·잔액·송금 API를 제공하는 호환 계층입니다.
@@ -96,14 +106,47 @@ impl RpcNodeHandle {
         state
             .archive
             .append_finalized(block, chain_before, &chain_after)?;
+        state.state_store.commit(&chain_after)?;
         state.chain = chain_after;
+        state.sync_current = state.chain.tip_height();
+        state.sync_active = state.sync_current < state.sync_highest;
+        let chain = state.chain.clone();
+        state.pool.retain_valid(|transaction| {
+            let total = transaction.amount.checked_add(transaction.fee);
+            transaction.nonce >= chain.next_nonce(&transaction.from)
+                && total.is_some_and(|value| chain.balance_of(&transaction.from) >= value)
+                && crate::wallet::verify_transaction(transaction).is_ok()
+        });
         Ok(())
     }
 
     pub fn install_synced_chain(&self, chain: Blockchain) -> Result<(), String> {
+        let mut state = self
+            .state
+            .write()
+            .map_err(|_| "RPC 상태 쓰기 잠금이 손상되었습니다.".to_string())?;
+        state.state_store.commit(&chain)?;
+        state.chain = chain;
+        state.sync_current = state.chain.tip_height();
+        state.sync_active = state.sync_current < state.sync_highest;
+        Ok(())
+    }
+
+    pub fn set_peer_count(&self, count: usize) -> Result<(), String> {
         self.state
             .write()
-            .map(|mut state| state.chain = chain)
+            .map(|mut state| state.peer_count = count)
+            .map_err(|_| "RPC 상태 쓰기 잠금이 손상되었습니다.".into())
+    }
+
+    pub fn begin_sync(&self, highest: u64) -> Result<(), String> {
+        self.state
+            .write()
+            .map(|mut state| {
+                state.sync_highest = state.sync_highest.max(highest);
+                state.sync_current = state.chain.tip_height();
+                state.sync_active = state.sync_current < state.sync_highest;
+            })
             .map_err(|_| "RPC 상태 쓰기 잠금이 손상되었습니다.".into())
     }
 }
@@ -112,8 +155,12 @@ impl RpcServer {
     pub fn new(config: RpcConfig) -> Self {
         // 첫 번째 계정은 개발용 faucet입니다. 실제 운영망에서는 genesis/config와
         // 암호화된 keystore로 교체해야 합니다.
-        let faucet = AccountWallet::from_private_key([42; 32])
-            .expect("고정 개발용 faucet 개인키는 유효해야 합니다.");
+        let faucet = if cfg!(test) {
+            AccountWallet::from_private_key([42; 32])
+                .expect("테스트 faucet 개인키는 유효해야 합니다.")
+        } else {
+            AccountWallet::new()
+        };
         let chain_id = config
             .genesis
             .as_ref()
@@ -126,6 +173,10 @@ impl RpcServer {
             .unwrap_or(99_000_000);
         let archive = ArchiveStore::new(&config.data_dir, max_active_bytes)
             .expect("활성 블록 저장소를 만들 수 있어야 합니다.");
+        let keystore = Keystore::new(config.data_dir.join("keystore"))
+            .expect("keystore 디렉터리를 만들 수 있어야 합니다.");
+        let state_store = StateStore::new(&config.data_dir)
+            .expect("상태 저장소를 만들 수 있어야 합니다.");
         let mut chain = match config.genesis.as_ref() {
             Some(genesis) => Blockchain::from_genesis(genesis)
                 .expect("RpcServer에는 검증된 제네시스 설정을 전달해야 합니다."),
@@ -165,6 +216,7 @@ impl RpcServer {
         let mut wallets = HashMap::new();
         let faucet_address = faucet.address();
         wallets.insert(faucet_address.clone(), faucet);
+        let initial_height = chain.tip_height();
         Self {
             state: Arc::new(RwLock::new(RpcState {
                 chain,
@@ -173,6 +225,13 @@ impl RpcServer {
                 faucet_alias: faucet_address,
                 chain_id,
                 archive,
+                keystore,
+                state_store,
+                peer_count: 0,
+                sync_current: initial_height,
+                sync_highest: initial_height,
+                sync_active: false,
+                started_at: std::time::Instant::now(),
             })),
             config,
         }
@@ -203,6 +262,25 @@ async fn handle_rpc(
     axum::extract::State(state): axum::extract::State<Arc<RwLock<RpcState>>>,
     Json(request): Json<Value>,
 ) -> Json<Value> {
+    if let Some(requests) = request.as_array() {
+        if requests.is_empty() {
+            return Json(json!({
+                "jsonrpc": "2.0",
+                "id": null,
+                "error": {"code": -32600, "message": "빈 batch 요청은 허용되지 않습니다."}
+            }));
+        }
+        return Json(Value::Array(
+            requests
+                .iter()
+                .map(|request| rpc_response(&state, request))
+                .collect(),
+        ));
+    }
+    Json(rpc_response(&state, &request))
+}
+
+fn rpc_response(state: &Arc<RwLock<RpcState>>, request: &Value) -> Value {
     let id = request.get("id").cloned().unwrap_or(Value::Null);
     let method = request
         .get("method")
@@ -214,13 +292,13 @@ async fn handle_rpc(
         .cloned()
         .unwrap_or_default();
 
-    let result = dispatch(&state, method, &params);
-    Json(match result {
+    let result = dispatch(state, method, &params);
+    match result {
         Ok(value) => json!({"jsonrpc": "2.0", "id": id, "result": value}),
         Err((code, message)) => {
             json!({"jsonrpc": "2.0", "id": id, "error": {"code": code, "message": message}})
         }
-    })
+    }
 }
 
 fn dispatch(
@@ -239,7 +317,10 @@ fn dispatch(
             Ok(json!(state.chain_id.to_string()))
         }
         "net_listening" => Ok(json!(true)),
-        "net_peerCount" => Ok(json!("0x0")),
+        "net_peerCount" => {
+            let state = read_state(state)?;
+            Ok(json!(quantity(state.peer_count as u64)))
+        }
         "rpc_modules" => Ok(json!({
             "eth": "1.0",
             "net": "1.0",
@@ -250,7 +331,18 @@ fn dispatch(
             let state = read_state(state)?;
             Ok(json!(quantity(state.chain_id)))
         }
-        "eth_syncing" => Ok(json!(false)),
+        "eth_syncing" => {
+            let state = read_state(state)?;
+            if !state.sync_active {
+                Ok(json!(false))
+            } else {
+                Ok(json!({
+                    "startingBlock": "0x0",
+                    "currentBlock": quantity(state.sync_current),
+                    "highestBlock": quantity(state.sync_highest)
+                }))
+            }
+        }
         "eth_blockNumber" => {
             let state = read_state(state)?;
             let height = state.chain.tip_height();
@@ -267,48 +359,77 @@ fn dispatch(
             Ok(json!(state.faucet_alias))
         }
         "personal_newAccount" => {
+            let password = params
+                .first()
+                .and_then(Value::as_str)
+                .or_else(|| cfg!(test).then_some("test-password"))
+                .ok_or_else(|| (-32602, "keystore 비밀번호가 필요합니다.".into()))?;
             let mut state = write_state(state)?;
             let wallet = AccountWallet::new();
             let address = wallet.address();
+            state
+                .keystore
+                .store(&wallet, password)
+                .map_err(|message| (-32000, message))?;
             state.wallets.insert(address.clone(), wallet);
             Ok(json!(address))
         }
         "personal_importRawKey" => {
             let private_key = string_param(params, 0)?;
+            let password = string_param(params, 1)?;
             let wallet = AccountWallet::from_private_key_hex(private_key)
                 .map_err(|message| (-32602, message))?;
             let address = wallet.address();
             let mut state = write_state(state)?;
+            state
+                .keystore
+                .store(&wallet, password)
+                .map_err(|message| (-32000, message))?;
             state.wallets.insert(address.clone(), wallet);
             Ok(json!(address))
         }
         "ieum_newMnemonic" => {
+            let password = string_param(params, 0)?;
             let words = AccountWallet::generate_mnemonic().map_err(|message| (-32603, message))?;
             let wallet =
                 AccountWallet::from_mnemonic(&words, 0).map_err(|message| (-32603, message))?;
             let address = wallet.address();
             let mut state = write_state(state)?;
+            state
+                .keystore
+                .store(&wallet, password)
+                .map_err(|message| (-32000, message))?;
             state.wallets.insert(address.clone(), wallet);
             Ok(json!({"mnemonic": words, "address": address, "path": "m/44'/60'/0'/0/0"}))
         }
         "ieum_importMnemonic" => {
             let words = string_param(params, 0)?;
             let index = params.get(1).and_then(Value::as_u64).unwrap_or(0);
+            let password = string_param(params, 2)?;
             let index = u32::try_from(index)
                 .map_err(|_| (-32602, "계정 index가 u32 범위를 벗어났습니다.".into()))?;
             let wallet =
                 AccountWallet::from_mnemonic(words, index).map_err(|message| (-32602, message))?;
             let address = wallet.address();
             let mut state = write_state(state)?;
+            state
+                .keystore
+                .store(&wallet, password)
+                .map_err(|message| (-32000, message))?;
             state.wallets.insert(address.clone(), wallet);
             Ok(json!(address))
         }
         "personal_unlockAccount" => {
             let address = string_param(params, 0)?;
-            let state = read_state(state)?;
-            Ok(json!(
-                state.wallets.contains_key(&normalize_address(address))
-            ))
+            let password = string_param(params, 1)?;
+            let mut state = write_state(state)?;
+            let normalized = normalize_address(address);
+            let wallet = state
+                .keystore
+                .load(&normalized, password)
+                .map_err(|message| (-32000, message))?;
+            state.wallets.insert(normalized, wallet);
+            Ok(json!(true))
         }
         "eth_getBalance" => {
             let address = string_param(params, 0)?;
@@ -327,6 +448,11 @@ fn dispatch(
         "eth_gasPrice" => Ok(json!("0x1")),
         "eth_estimateGas" => Ok(json!("0x5208")),
         "eth_getCode" => Ok(json!("0x")),
+        "eth_call" => Ok(json!("0x")),
+        "eth_getLogs" => Ok(json!([])),
+        "eth_getUncleCountByBlockHash" | "eth_getUncleCountByBlockNumber" => {
+            Ok(json!("0x0"))
+        }
         "eth_getBlockByNumber" => {
             let selector = string_param(params, 0)?;
             let full = params.get(1).and_then(Value::as_bool).unwrap_or(false);
@@ -360,6 +486,40 @@ fn dispatch(
                 .map(|(block, index, transaction)| transaction_json(block, index, transaction))
                 .unwrap_or(Value::Null))
         }
+        "eth_getBlockTransactionCountByNumber" => {
+            let selector = string_param(params, 0)?;
+            let state = read_state(state)?;
+            let height = if selector == "latest" {
+                state.chain.tip_height()
+            } else {
+                parse_quantity_u64(selector)?
+            };
+            Ok(state
+                .chain
+                .block_by_height(height)
+                .map(|block| json!(quantity(block.transactions.len() as u64)))
+                .unwrap_or(Value::Null))
+        }
+        "eth_getTransactionByBlockNumberAndIndex" => {
+            let selector = string_param(params, 0)?;
+            let index = parse_quantity_u64(string_param(params, 1)?)? as usize;
+            let state = read_state(state)?;
+            let height = if selector == "latest" {
+                state.chain.tip_height()
+            } else {
+                parse_quantity_u64(selector)?
+            };
+            Ok(state
+                .chain
+                .block_by_height(height)
+                .and_then(|block| {
+                    block
+                        .transactions
+                        .get(index)
+                        .map(|transaction| transaction_json(block, index, transaction))
+                })
+                .unwrap_or(Value::Null))
+        }
         "eth_getTransactionReceipt" => {
             let hash = string_param(params, 0)?;
             let state = read_state(state)?;
@@ -388,6 +548,31 @@ fn dispatch(
                     .map_err(|message| (-32603, message))?,
             )
             .map_err(|error| (-32603, error.to_string()))
+        }
+        "txpool_status" => {
+            let state = read_state(state)?;
+            Ok(json!({
+                "pending": quantity(state.pool.len() as u64),
+                "queued": "0x0",
+                "bytes": quantity(state.pool.total_bytes() as u64)
+            }))
+        }
+        "ieum_nodeStatus" => {
+            let state = read_state(state)?;
+            Ok(json!({
+                "version": env!("CARGO_PKG_VERSION"),
+                "chainId": state.chain_id,
+                "height": state.chain.tip_height(),
+                "blockHash": format!("0x{}", state.chain.tip_hash()),
+                "stateRoot": format!("0x{}", state.chain.state_hash()),
+                "peers": state.peer_count,
+                "mempoolTransactions": state.pool.len(),
+                "mempoolBytes": state.pool.total_bytes(),
+                "syncing": state.sync_active,
+                "syncCurrent": state.sync_current,
+                "syncHighest": state.sync_highest,
+                "uptimeSeconds": state.started_at.elapsed().as_secs()
+            }))
         }
         "eth_sendTransaction" | "personal_sendTransaction" => send_transaction(state, params),
         "eth_sendRawTransaction" => send_raw_transaction(state, params),
@@ -638,7 +823,12 @@ mod tests {
     fn standard_mnemonic_import_returns_metamask_address() {
         let shared = RpcServer::new(RpcConfig::default()).state;
         let words = "test test test test test test test test test test test junk";
-        let address = dispatch(&shared, "ieum_importMnemonic", &[json!(words), json!(0)]).unwrap();
+        let address = dispatch(
+            &shared,
+            "ieum_importMnemonic",
+            &[json!(words), json!(0), json!("test-password")],
+        )
+        .unwrap();
         assert_eq!(address, json!("0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266"));
     }
 }

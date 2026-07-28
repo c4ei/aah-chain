@@ -1,0 +1,9 @@
+{
+  "upgrades": [
+    {
+      "name": "genesis-v1",
+      "activation_height": 0,
+      "protocol_version": 1
+    }
+  ]
+}
