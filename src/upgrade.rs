@@ -23,7 +23,9 @@ impl UpgradeSchedule {
         let bytes = fs::read(path).map_err(|error| error.to_string())?;
         let mut schedule: Self =
             serde_json::from_slice(&bytes).map_err(|error| error.to_string())?;
-        schedule.upgrades.sort_by_key(|upgrade| upgrade.activation_height);
+        schedule
+            .upgrades
+            .sort_by_key(|upgrade| upgrade.activation_height);
         for pair in schedule.upgrades.windows(2) {
             if pair[0].activation_height == pair[1].activation_height {
                 return Err("같은 높이에 두 프로토콜 업그레이드를 등록할 수 없습니다.".into());
