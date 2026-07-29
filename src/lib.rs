@@ -23,11 +23,13 @@ pub mod operations;
 pub mod peer_guard;
 pub mod raw_transaction;
 pub mod rpc;
+pub mod scheduled_event;
 pub mod signer;
 pub mod snapshot_scheduler;
 pub mod snapshot_sync;
 pub mod state_store;
 pub mod storage;
+pub mod updater;
 pub mod upgrade;
 pub mod validator_key;
 pub mod wallet;
@@ -58,6 +60,9 @@ pub use network::{NetworkCommand, NetworkConfig, NetworkEvent, P2pNode};
 pub use operations::{NodeStorageMode, PruningPolicy, StorageManifest};
 pub use peer_guard::{PeerDecision, PeerGuard};
 pub use rpc::{RpcConfig, RpcNodeHandle, RpcServer};
+pub use scheduled_event::{
+    EventPayment, EventSchedule, MAX_CLOCK_DRIFT_SECONDS, ScheduledEvent, ScheduledEventAction,
+};
 pub use signer::{ExternalSigner, ValidatorSigner};
 pub use snapshot_scheduler::{ChunkAssignment, SnapshotScheduler};
 pub use snapshot_sync::{SnapshotChunk, SnapshotDownload, SnapshotManifest, SyncTip, TipQuorum};
@@ -125,6 +130,43 @@ mod tests {
 
         assert_eq!(chain.balance_of(&producer.address()), 3);
         assert_eq!(chain.balance_of(FOUNDATION_FEE_ADDRESS), 0);
+    }
+
+    #[test]
+    fn scheduled_distribution_executes_exactly_once() {
+        let receiver = "0x1111111111111111111111111111111111111111".to_string();
+        let mut chain = Blockchain::new(vec![(FOUNDATION_FEE_ADDRESS.into(), 1_000)]);
+        let event = ScheduledEvent {
+            id: "distribution-2027".into(),
+            execute_at: 100,
+            action: ScheduledEventAction::TreasuryDistribution {
+                recipients: vec![EventPayment {
+                    address: receiver.clone(),
+                    amount: 250,
+                }],
+            },
+        };
+        let first = Block::new(
+            1,
+            chain.tip_hash().to_string(),
+            100,
+            "producer".into(),
+            vec![],
+        )
+        .with_system_events(vec![event.clone()]);
+        chain.apply_block(first).unwrap();
+        assert_eq!(chain.balance_of(FOUNDATION_FEE_ADDRESS), 750);
+        assert_eq!(chain.balance_of(&receiver), 250);
+
+        let duplicate = Block::new(
+            2,
+            chain.tip_hash().to_string(),
+            101,
+            "producer".into(),
+            vec![],
+        )
+        .with_system_events(vec![event]);
+        assert!(chain.apply_block(duplicate).is_err());
     }
 
     #[test]

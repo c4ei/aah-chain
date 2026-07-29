@@ -1,7 +1,7 @@
 use crate::Blockchain;
 use crate::model::Block;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs::{self, OpenOptions};
 use std::io::{BufReader, Read, Write};
 use std::path::{Path, PathBuf};
@@ -16,6 +16,8 @@ pub struct StateSnapshot {
     pub state_hash: String,
     pub balances: HashMap<String, u128>,
     pub next_nonces: HashMap<String, u64>,
+    #[serde(default)]
+    pub executed_events: HashSet<String>,
 }
 
 impl StateSnapshot {
@@ -27,6 +29,7 @@ impl StateSnapshot {
             state_hash: chain.state_hash(),
             balances: chain.balances_snapshot(),
             next_nonces: chain.nonces_snapshot(),
+            executed_events: chain.executed_events().clone(),
         }
     }
 }

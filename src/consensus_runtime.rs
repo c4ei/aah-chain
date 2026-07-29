@@ -4,6 +4,7 @@ use crate::consensus::{
     SignedProposal, Validator, VoteType,
 };
 use crate::model::Block;
+use crate::scheduled_event::{EventSchedule, MAX_CLOCK_DRIFT_SECONDS};
 use crate::signer::ValidatorSigner;
 use crate::wallet::Wallet;
 use std::time::{Duration, Instant};
@@ -47,6 +48,7 @@ pub struct ConsensusRuntime {
     precommits: Vec<ConsensusMessage>,
     finalized: Vec<FinalityCertificate>,
     pending_finalized: Vec<FinalityCertificate>,
+    event_schedule: EventSchedule,
 }
 
 impl ConsensusRuntime {
@@ -95,7 +97,14 @@ impl ConsensusRuntime {
             precommits: Vec::new(),
             finalized: Vec::new(),
             pending_finalized: Vec::new(),
+            event_schedule: EventSchedule::default(),
         })
+    }
+
+    pub fn set_event_schedule(&mut self, schedule: EventSchedule) -> Result<(), String> {
+        schedule.validate()?;
+        self.event_schedule = schedule;
+        Ok(())
     }
 
     pub fn make_proposal(&self, block: Block) -> Result<SignedProposal, String> {
@@ -142,6 +151,7 @@ impl ConsensusRuntime {
         {
             return Err("제안 블록이 현재 체인의 다음 블록이 아닙니다.".into());
         }
+        self.validate_scheduled_block(&proposal.block)?;
         self.consensus.handle_proposal(&proposal)?;
         self.pending = Some(proposal.block.clone());
         self.reset_deadline();
@@ -355,6 +365,7 @@ impl ConsensusRuntime {
             if certificate.block.height != next {
                 return Err("동기화 응답에 블록 높이 공백이 있습니다.".into());
             }
+            self.validate_scheduled_block(&certificate.block)?;
             self.chain.apply_block(certificate.block.clone())?;
             self.finalized.push(certificate);
             applied += 1;
@@ -395,6 +406,7 @@ impl ConsensusRuntime {
             if block.height != next {
                 return Err("동기화 응답에 블록 높이 공백이 있습니다.".into());
             }
+            self.validate_scheduled_block(&block)?;
             self.chain.apply_block(block)?;
             applied += 1;
         }
@@ -419,5 +431,24 @@ impl ConsensusRuntime {
 
     fn reset_deadline(&mut self) {
         self.deadline = Instant::now() + self.timeouts.for_phase(self.consensus.phase());
+    }
+
+    fn validate_scheduled_block(&self, block: &Block) -> Result<(), String> {
+        let previous = self.chain.blocks.last().ok_or("이전 블록이 없습니다.")?;
+        if block.timestamp < previous.timestamp {
+            return Err("블록 시각은 이전 블록보다 빠를 수 없습니다.".into());
+        }
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_err(|_| "시스템 시각이 Unix epoch보다 이전입니다.")?
+            .as_secs();
+        if block.timestamp > now.saturating_add(MAX_CLOCK_DRIFT_SECONDS) {
+            return Err("블록 시각이 허용된 미래 오차를 넘었습니다.".into());
+        }
+        self.event_schedule.validate_block_events(
+            block.timestamp,
+            &block.system_events,
+            self.chain.executed_events(),
+        )
     }
 }

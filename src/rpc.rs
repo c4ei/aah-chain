@@ -188,13 +188,14 @@ impl RpcServer {
             .expect("embedded 상태 DB를 읽을 수 있어야 합니다.")
         {
             assert_eq!(state.chain_id, chain_id, "embedded DB chain ID 불일치");
-            chain = Blockchain::from_snapshot(
+            chain = Blockchain::from_snapshot_with_events(
                 chain_id,
                 chain.genesis_commitment.clone(),
                 state.height,
                 state.block_hash,
                 state.balances,
                 state.nonces,
+                state.executed_events,
             )
             .expect("embedded DB 상태를 복원할 수 있어야 합니다.");
             assert_eq!(
@@ -207,13 +208,14 @@ impl RpcServer {
             .expect("상태 체크포인트를 읽을 수 있어야 합니다.")
         {
             assert_eq!(snapshot.chain_id, chain_id, "체크포인트 chain ID 불일치");
-            chain = Blockchain::from_snapshot(
+            chain = Blockchain::from_snapshot_with_events(
                 chain_id,
                 chain.genesis_commitment.clone(),
                 snapshot.height,
                 snapshot.block_hash,
                 snapshot.balances,
                 snapshot.next_nonces,
+                snapshot.executed_events,
             )
             .expect("체크포인트 상태를 복원할 수 있어야 합니다.");
             assert_eq!(
@@ -718,6 +720,7 @@ fn block_json(block: &Block, full_transactions: bool) -> Value {
         "timestamp": quantity(block.timestamp),
         "miner": block.producer,
         "transactions": transactions,
+        "ieumSystemEvents": block.system_events,
         "transactionsRoot": format!("0x{}", block.hash),
         "size": quantity(serde_json::to_vec(block).map(|bytes| bytes.len()).unwrap_or(0) as u64)
     })

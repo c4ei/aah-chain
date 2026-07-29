@@ -1,7 +1,7 @@
 use crate::Blockchain;
 use crate::embedded_db::EmbeddedDb;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -14,6 +14,8 @@ pub struct CanonicalState {
     pub state_root: String,
     pub balances: HashMap<String, u128>,
     pub nonces: HashMap<String, u64>,
+    #[serde(default)]
+    pub executed_events: HashSet<String>,
     pub height_to_hash: HashMap<u64, String>,
     pub transaction_index: HashMap<String, (u64, usize)>,
 }
@@ -39,6 +41,7 @@ impl CanonicalState {
             state_root: chain.state_hash(),
             balances: chain.balances_snapshot(),
             nonces: chain.nonces_snapshot(),
+            executed_events: chain.executed_events().clone(),
             height_to_hash,
             transaction_index,
         }

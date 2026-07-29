@@ -1,3 +1,4 @@
+use crate::scheduled_event::ScheduledEvent;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -44,6 +45,9 @@ pub struct Block {
     pub timestamp: u64,
     pub producer: Address,
     pub transactions: Vec<Transaction>,
+    /// 합의된 시각에 실행하는 시스템 이벤트입니다. 기존 블록 호환을 위해 기본값은 빈 목록입니다.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub system_events: Vec<ScheduledEvent>,
     pub hash: String,
 }
 
@@ -56,6 +60,7 @@ impl Block {
             timestamp: 0,
             producer: "genesis".into(),
             transactions: vec![],
+            system_events: vec![],
             hash: String::new(),
         };
         block.hash = block.calculate_hash();
@@ -75,6 +80,7 @@ impl Block {
             timestamp,
             producer,
             transactions,
+            system_events: vec![],
             hash: String::new(),
         };
         block.hash = block.calculate_hash();
@@ -91,7 +97,18 @@ impl Block {
         for tx in &self.transactions {
             hasher.update(tx.id().as_bytes());
         }
+        // v0.16.x까지 생성된 블록은 이 필드가 없으므로 빈 목록은 해시에 넣지 않습니다.
+        for event in &self.system_events {
+            hasher.update(event.id.as_bytes());
+            hasher.update(event.consensus_bytes());
+        }
         hex::encode(hasher.finalize())
+    }
+
+    pub fn with_system_events(mut self, events: Vec<ScheduledEvent>) -> Self {
+        self.system_events = events;
+        self.hash = self.calculate_hash();
+        self
     }
 }
 

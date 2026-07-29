@@ -2,7 +2,7 @@ use crate::model::{Address, Block, Transaction};
 use crate::wallet::verify_transaction;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 /// 운영 초기 재단 수수료 정책입니다.
@@ -22,6 +22,8 @@ pub struct Blockchain {
     pub initial_balances: HashMap<Address, u128>,
     balances: HashMap<Address, u128>,
     next_nonces: HashMap<Address, u64>,
+    #[serde(default)]
+    executed_events: HashSet<String>,
 }
 
 impl Blockchain {
@@ -39,6 +41,7 @@ impl Blockchain {
             balances: initial_balances.clone(),
             initial_balances,
             next_nonces: HashMap::new(),
+            executed_events: HashSet::new(),
         }
     }
 
@@ -62,6 +65,26 @@ impl Blockchain {
         balances: HashMap<Address, u128>,
         next_nonces: HashMap<Address, u64>,
     ) -> Result<Self, String> {
+        Self::from_snapshot_with_events(
+            chain_id,
+            genesis_commitment,
+            height,
+            block_hash,
+            balances,
+            next_nonces,
+            HashSet::new(),
+        )
+    }
+
+    pub fn from_snapshot_with_events(
+        chain_id: u64,
+        genesis_commitment: String,
+        height: u64,
+        block_hash: String,
+        balances: HashMap<Address, u128>,
+        next_nonces: HashMap<Address, u64>,
+        executed_events: HashSet<String>,
+    ) -> Result<Self, String> {
         if block_hash.trim_start_matches("0x").len() != 64 {
             return Err("체크포인트 블록 해시는 32바이트 hex여야 합니다.".into());
         }
@@ -71,6 +94,7 @@ impl Blockchain {
             timestamp: 0,
             producer: "checkpoint".into(),
             transactions: vec![],
+            system_events: vec![],
             hash: block_hash.trim_start_matches("0x").to_string(),
         };
         Ok(Self {
@@ -80,6 +104,7 @@ impl Blockchain {
             initial_balances: balances.clone(),
             balances,
             next_nonces,
+            executed_events,
         })
     }
 
@@ -104,6 +129,10 @@ impl Blockchain {
 
     pub fn nonces_snapshot(&self) -> HashMap<Address, u64> {
         self.next_nonces.clone()
+    }
+
+    pub fn executed_events(&self) -> &HashSet<String> {
+        &self.executed_events
     }
 
     pub fn block_by_height(&self, height: u64) -> Option<&Block> {
@@ -171,9 +200,17 @@ impl Blockchain {
             &mut balances,
             &mut nonces,
         )?;
+        let mut executed_events = self.executed_events.clone();
+        apply_system_events(
+            &block.system_events,
+            block.timestamp,
+            &mut balances,
+            &mut executed_events,
+        )?;
         self.blocks.push(block);
         self.balances = balances;
         self.next_nonces = nonces;
+        self.executed_events = executed_events;
         Ok(self.blocks.last().unwrap())
     }
 
@@ -181,6 +218,7 @@ impl Blockchain {
     pub fn verify_and_rebuild(&mut self) -> Result<(), String> {
         let mut balances = self.initial_balances.clone();
         let mut nonces = HashMap::new();
+        let mut executed_events = HashSet::new();
         if self.blocks.first() != Some(&Block::genesis()) {
             return Err("제네시스 블록이 다릅니다.".into());
         }
@@ -200,10 +238,17 @@ impl Blockchain {
                     &mut balances,
                     &mut nonces,
                 )?;
+                apply_system_events(
+                    &block.system_events,
+                    block.timestamp,
+                    &mut balances,
+                    &mut executed_events,
+                )?;
             }
         }
         self.balances = balances;
         self.next_nonces = nonces;
+        self.executed_events = executed_events;
         Ok(())
     }
 
@@ -217,8 +262,69 @@ impl Blockchain {
             hasher.update(balance.to_be_bytes());
             hasher.update(self.next_nonce(address).to_be_bytes());
         }
+        let mut event_ids: Vec<_> = self.executed_events.iter().collect();
+        event_ids.sort();
+        for event_id in event_ids {
+            hasher.update(b"event:");
+            hasher.update(event_id.as_bytes());
+        }
         hex::encode(hasher.finalize())
     }
+}
+
+fn apply_system_events(
+    events: &[crate::scheduled_event::ScheduledEvent],
+    block_timestamp: u64,
+    balances: &mut HashMap<Address, u128>,
+    executed: &mut HashSet<String>,
+) -> Result<(), String> {
+    use crate::scheduled_event::ScheduledEventAction;
+    for event in events {
+        event.validate()?;
+        if event.execute_at > block_timestamp {
+            return Err(format!(
+                "이벤트 {}가 실행 시각보다 먼저 포함됐습니다.",
+                event.id
+            ));
+        }
+        if !executed.insert(event.id.clone()) {
+            return Err(format!("이벤트 {}는 이미 실행됐습니다.", event.id));
+        }
+        match &event.action {
+            ScheduledEventAction::TreasuryDistribution { recipients } => {
+                for payment in recipients {
+                    transfer_from_foundation(balances, &payment.address, payment.amount)?;
+                }
+            }
+            ScheduledEventAction::PeriodicProducerReward { producer, amount } => {
+                transfer_from_foundation(balances, producer, *amount)?;
+            }
+            ScheduledEventAction::IncidentCompensation { victim, amount, .. } => {
+                // 과거 거래를 삭제하지 않고 재단 계정에서 피해 보상 역거래를 기록합니다.
+                transfer_from_foundation(balances, victim, *amount)?;
+            }
+            ScheduledEventAction::ProtocolCheckpoint { .. } => {}
+        }
+    }
+    Ok(())
+}
+
+fn transfer_from_foundation(
+    balances: &mut HashMap<Address, u128>,
+    receiver: &str,
+    amount: u128,
+) -> Result<(), String> {
+    let foundation = balances.get(FOUNDATION_FEE_ADDRESS).copied().unwrap_or(0);
+    if foundation < amount {
+        return Err("예약 이벤트를 실행할 재단 잔액이 부족합니다.".into());
+    }
+    balances.insert(FOUNDATION_FEE_ADDRESS.into(), foundation - amount);
+    credit_balance(
+        balances,
+        &normalize_address(receiver),
+        amount,
+        "예약 이벤트 수령 잔액이 u128 범위를 넘습니다.",
+    )
 }
 
 fn apply_transactions(

@@ -1,8 +1,8 @@
 use clap::{Args as ClapArgs, Parser, Subcommand};
 use ieum_chain::{
-    ConsensusRuntime, ConsensusTimeouts, EvidenceStore, ExternalSigner, FinalityStore,
-    NetworkCommand, NetworkConfig, NetworkEvent, P2pNode, RpcConfig, RpcServer, SyncTip, TipQuorum,
-    UpgradeSchedule, Validator, ValidatorSigner, Wallet, log_error, log_info,
+    ConsensusRuntime, ConsensusTimeouts, EventSchedule, EvidenceStore, ExternalSigner,
+    FinalityStore, NetworkCommand, NetworkConfig, NetworkEvent, P2pNode, RpcConfig, RpcServer,
+    SyncTip, TipQuorum, UpgradeSchedule, Validator, ValidatorSigner, Wallet, log_error, log_info,
     logger::init_server_log, node_key::load_or_create_node_key,
 };
 use libp2p::Multiaddr;
@@ -17,7 +17,7 @@ const DEFAULT_BOOTSTRAP_CONFIG: &str = "config/bootstrap.json";
 const DEFAULT_BOOTSTRAP_PEER: &str = "/dns4/node.ieum.aah.name/udp/7001/quic-v1/p2p/12D3KooWAVRZjnbP8nXp8vD6irYFAXdLJVyczEFWdKLFzKnKDATx";
 const SERVER_INSTANCE_PORT: u16 = 49_889;
 const CLIENT_INSTANCE_PORT: u16 = 49_890;
-const SUPPORTED_PROTOCOL_VERSION: u32 = 1;
+const SUPPORTED_PROTOCOL_VERSION: u32 = 2;
 
 #[derive(Debug, Parser)]
 #[command(name = "ieum-chain", version, about = "가벼운 IEUM 테스트넷 노드")]
@@ -106,6 +106,18 @@ struct NodeArgs {
     /// 검증자 공개키와 투표권 설정
     #[arg(long, default_value = "config/validators.example.json")]
     validators_config: PathBuf,
+
+    /// 검증자 전원이 동일하게 배포하는 승인된 시간 기반 이벤트 설정
+    #[arg(long, default_value = "config/events.json")]
+    events_config: PathBuf,
+
+    /// 서명된 업데이트 manifest URL. 지정한 경우 시작할 때 새 버전을 확인합니다.
+    #[arg(long, requires = "release_public_key")]
+    update_manifest_url: Option<String>,
+
+    /// manifest를 검증할 IEUM 릴리스 Ed25519 공개키(32바이트 hex)
+    #[arg(long, requires = "update_manifest_url")]
+    release_public_key: Option<String>,
 
     /// 폐쇄형 개발망에서만 고정 검증자 키를 허용합니다.
     #[arg(long, default_value_t = false)]
@@ -198,6 +210,9 @@ async fn main() -> Result<(), String> {
                 validator_index: 1,
                 validator_key: PathBuf::from("config/validator.key"),
                 validators_config: PathBuf::from("config/validators.example.json"),
+                events_config: PathBuf::from("config/events.json"),
+                update_manifest_url: None,
+                release_public_key: None,
                 allow_insecure_test_keys: false,
                 validator_signer_command: None,
                 validator_public_key: None,
@@ -222,6 +237,13 @@ async fn main() -> Result<(), String> {
         init_server_log("data/logs/ieum-chain.log")?;
     }
     prepare_ports(&mut args, is_client)?;
+    if let (Some(url), Some(public_key)) = (
+        args.update_manifest_url.as_deref(),
+        args.release_public_key.as_deref(),
+    ) && let Err(error) = ieum_chain::updater::check_and_prompt(url, public_key, is_client)
+    {
+        log_error!("[업데이트 확인 실패] {error}. 현재 버전으로 계속 실행합니다.");
+    }
 
     let identity_key = load_or_create_node_key(&args.node_key)?;
     let config = NetworkConfig {
@@ -292,6 +314,8 @@ async fn main() -> Result<(), String> {
             precommit: Duration::from_millis(args.precommit_timeout_ms),
         },
     )?;
+    let event_schedule = EventSchedule::load(&args.events_config)?;
+    consensus.set_event_schedule(event_schedule.clone())?;
     let finality_store = FinalityStore::new(&args.rpc_data_dir)?;
     let evidence_store = EvidenceStore::new(&args.rpc_data_dir);
     let evidence_count = evidence_store.load()?.len();
@@ -332,15 +356,19 @@ async fn main() -> Result<(), String> {
                         SUPPORTED_PROTOCOL_VERSION,
                     )?;
                     let pending = rpc.drain_transactions(1_000)?;
-                    if !pending.is_empty() {
+                    let timestamp = unix_timestamp();
+                    let due_events =
+                        event_schedule.due(timestamp, consensus.chain.executed_events());
+                    if !pending.is_empty() || !due_events.is_empty() {
                         let previous = consensus.chain.blocks.last().unwrap();
                         let block = ieum_chain::Block::new(
                             previous.height + 1,
                             previous.hash.clone(),
-                            unix_timestamp(),
+                            timestamp,
                             local_validator_address.clone(),
                             pending.clone(),
-                        );
+                        )
+                        .with_system_events(due_events);
                         match consensus.make_proposal(block) {
                             Ok(proposal) => {
                                 let prevote = consensus.receive_proposal(proposal.clone())?;
