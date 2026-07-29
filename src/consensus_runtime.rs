@@ -421,6 +421,26 @@ impl ConsensusRuntime {
         self.consensus.round()
     }
 
+    /// 아직 확정 블록이 없는 부트스트랩 구간에서 자동 발견한 공통 검증자 집합을 적용합니다.
+    pub fn replace_bootstrap_validators(
+        &mut self,
+        validators: Vec<Validator>,
+    ) -> Result<(), String> {
+        if self.chain.tip_height() != 0 || self.pending.is_some() {
+            return Err(
+                "제네시스 이후에는 epoch 변경 절차 없이 검증자 집합을 바꿀 수 없습니다.".into(),
+            );
+        }
+        let mut consensus = BftConsensus::new(validators.clone())?;
+        consensus.start_round(1, 0)?;
+        self.consensus = consensus;
+        self.validators = validators;
+        self.valid_block = None;
+        self.precommits.clear();
+        self.reset_deadline();
+        Ok(())
+    }
+
     pub fn locked_value(&self) -> Option<(&str, u32)> {
         self.consensus.locked_value()
     }

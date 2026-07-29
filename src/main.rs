@@ -2,12 +2,14 @@ use clap::{Args as ClapArgs, Parser, Subcommand};
 use ieum_chain::{
     ConsensusRuntime, ConsensusTimeouts, EventSchedule, EvidenceStore, ExternalSigner,
     FinalityStore, NetworkCommand, NetworkConfig, NetworkEvent, P2pNode, RpcConfig, RpcServer,
-    SyncTip, TipQuorum, UpgradeSchedule, Validator, ValidatorSigner, Wallet, log_error, log_info,
-    logger::init_server_log, node_key::load_or_create_node_key,
+    SyncTip, TipQuorum, UpgradeSchedule, Validator, ValidatorRegistration, ValidatorSigner, Wallet,
+    log_error, log_info, logger::init_server_log, node_key::load_or_create_node_key,
 };
-use libp2p::Multiaddr;
-use serde::Deserialize;
+use libp2p::{Multiaddr, multiaddr::Protocol};
+use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::fs;
+use std::io::{self, Write};
 use std::net::{IpAddr, Ipv4Addr, TcpListener, UdpSocket};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -185,7 +187,14 @@ async fn main() -> Result<(), String> {
             if args.node_key == Path::new("data/node.key") {
                 args.node_key = PathBuf::from("data/server.node.key");
             }
-            let peers = std::mem::take(&mut args.peer);
+            let mut peers = std::mem::take(&mut args.peer);
+            if peers.is_empty() {
+                peers.push(
+                    DEFAULT_BOOTSTRAP_PEER
+                        .parse()
+                        .map_err(|error| format!("기본 부트스트랩 주소 오류: {error}"))?,
+                );
+            }
             ("서버", args, peers, false)
         }
         Some(Command::Client(mut client)) => {
@@ -257,6 +266,11 @@ async fn main() -> Result<(), String> {
     }
 
     let identity_key = load_or_create_node_key(&args.node_key)?;
+    let local_peer_id = libp2p::PeerId::from(identity_key.public());
+    let bootstrap_peers = bootstrap_peers
+        .into_iter()
+        .filter(|address| multiaddr_peer_id(address).as_ref() != Some(&local_peer_id))
+        .collect();
     let config = NetworkConfig {
         listen_port: args.port,
         bootstrap_peers,
@@ -277,7 +291,7 @@ async fn main() -> Result<(), String> {
     let rpc_server = RpcServer::new(rpc_config);
     let rpc = rpc_server.node_handle();
     let mut rpc_task = tokio::spawn(rpc_server.run());
-    let validators = load_validators(&args.validators_config)?;
+    let mut validators = load_validators(&args.validators_config)?;
     if !is_client && validators.len() < 4 {
         log_info!(
             "[부트스트랩 합의] 현재 검증자 {}명입니다. 4명 이상 등록되기 전에는 \
@@ -317,6 +331,22 @@ async fn main() -> Result<(), String> {
         }
     }
     let local_validator_address = local_validator.address();
+    let local_registration = if is_client {
+        None
+    } else {
+        Some(ValidatorRegistration {
+            validator_id: local_validator_address.clone(),
+            peer_id: peer_id.to_string(),
+            signature_hex: local_validator.sign_bytes(&ValidatorRegistration::bytes_to_sign(
+                &local_validator_address,
+                &peer_id.to_string(),
+            ))?,
+        })
+    };
+    let mut registrations = BTreeMap::new();
+    if let Some(registration) = &local_registration {
+        registrations.insert(registration.validator_id.clone(), registration.clone());
+    }
     let upgrades = UpgradeSchedule::load("config/upgrades.json")?;
     upgrades.ensure_supported(
         rpc.chain()?.tip_height().saturating_add(1),
@@ -345,6 +375,7 @@ async fn main() -> Result<(), String> {
         log_info!("[BFT 인증서 복원] {imported}개");
     }
     let mut consensus_tick = tokio::time::interval(Duration::from_millis(500));
+    let mut registration_tick = tokio::time::interval(Duration::from_secs(2));
     let mut sync_quorum = TipQuorum::new(args.sync_quorum_peers)?;
 
     log_info!("IEUM {mode} 노드 시작: {peer_id}");
@@ -362,6 +393,14 @@ async fn main() -> Result<(), String> {
 
     loop {
         tokio::select! {
+            _ = registration_tick.tick(), if !is_client && consensus.chain.tip_height() == 0 => {
+                if let Some(registration) = &local_registration {
+                    commands
+                        .send(NetworkCommand::PublishValidatorRegistration(registration.clone()))
+                        .await
+                        .map_err(|error| error.to_string())?;
+                }
+            }
             _ = consensus_tick.tick() => {
                 for envelope in rpc.drain_outbound_communication()? {
                     commands
@@ -370,9 +409,17 @@ async fn main() -> Result<(), String> {
                         .map_err(|error| error.to_string())?;
                 }
                 let timed_out_transactions = consensus.pending_transactions();
-                if consensus.timeout_if_due(std::time::Instant::now())? {
+                let consensus_is_active = consensus.phase() != ieum_chain::ConsensusPhase::Propose
+                    || rpc.has_pending_transactions()?;
+                if consensus_is_active
+                    && consensus.timeout_if_due(std::time::Instant::now())?
+                {
                     rpc.restore_transactions(timed_out_transactions)?;
-                    log_info!("[BFT 라운드 변경] 단계별 제한 시간 초과, 새 라운드 {}", consensus.round());
+                    print!(
+                        "\r\x1b[2K[BFT 라운드 변경] 단계별 제한 시간 초과, 새 라운드 {}",
+                        consensus.round()
+                    );
+                    io::stdout().flush().map_err(|error| error.to_string())?;
                 }
                 if !is_client {
                     upgrades.ensure_supported(
@@ -429,6 +476,46 @@ async fn main() -> Result<(), String> {
                         commands.send(NetworkCommand::RequestSync {
                             from_height: consensus.chain.tip_height() + 1,
                         }).await.map_err(|e| e.to_string())?;
+                        if let Some(registration) = &local_registration {
+                            commands.send(NetworkCommand::PublishValidatorRegistration(registration.clone()))
+                                .await.map_err(|e| e.to_string())?;
+                        }
+                    }
+                    Some(NetworkEvent::ValidatorRegistrationReceived { registration, .. }) if !is_client => {
+                        if let Err(error) = verify_validator_registration(&registration) {
+                            log_error!("[검증자 자동 등록 거부] {error}");
+                            continue;
+                        }
+                        let is_new = registrations
+                            .insert(registration.validator_id.clone(), registration)
+                            .is_none();
+                        if is_new {
+                            log_info!(
+                                "[검증자 자동 등록] 확인 {}/4명",
+                                registrations.len().min(4)
+                            );
+                        }
+                        if registrations.len() >= 4 && consensus.chain.tip_height() == 0 {
+                            let selected: Vec<_> = registrations
+                                .keys()
+                                .take(4)
+                                .map(|id| Validator::new(id.clone(), 100))
+                                .collect();
+                            let mut current_ids: Vec<_> =
+                                validators.iter().map(|validator| validator.id.clone()).collect();
+                            current_ids.sort();
+                            let selected_ids: Vec<_> =
+                                selected.iter().map(|validator| validator.id.clone()).collect();
+                            if current_ids != selected_ids {
+                                consensus.replace_bootstrap_validators(selected.clone())?;
+                                save_validators(&args.validators_config, &selected)?;
+                                validators = selected;
+                                println!();
+                                log_info!(
+                                    "[BFT 합의 시작] 검증자 4명 자동 등록 완료. 공통 검증자 집합으로 전환했습니다."
+                                );
+                            }
+                        }
                     }
                     Some(NetworkEvent::TransactionReceived { transaction, .. }) => {
                         rpc.restore_transactions(vec![transaction])?;
@@ -544,6 +631,7 @@ async fn main() -> Result<(), String> {
                 }
             }
             _ = tokio::signal::ctrl_c() => {
+                println!();
                 log_info!("노드를 안전하게 종료합니다.");
                 rpc_task.abort();
                 break;
@@ -674,10 +762,45 @@ fn load_validator_wallet(
     Ok(Wallet::from_seed(seed))
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 struct ValidatorConfig {
     chain_id: String,
     validators: Vec<Validator>,
+}
+
+fn verify_validator_registration(registration: &ValidatorRegistration) -> Result<(), String> {
+    registration
+        .peer_id
+        .parse::<libp2p::PeerId>()
+        .map_err(|_| "등록 PeerId 형식이 올바르지 않습니다.".to_string())?;
+    ieum_chain::wallet::verify_signature(
+        &registration.validator_id,
+        &ValidatorRegistration::bytes_to_sign(&registration.validator_id, &registration.peer_id),
+        &registration.signature_hex,
+    )
+    .map_err(|error| format!("검증자 소유권 서명 오류: {error}"))
+}
+
+fn save_validators(path: &Path, validators: &[Validator]) -> Result<(), String> {
+    let config = ValidatorConfig {
+        chain_id: "21004".into(),
+        validators: validators.to_vec(),
+    };
+    let mut contents = serde_json::to_string_pretty(&config)
+        .map_err(|error| format!("검증자 설정 직렬화 실패: {error}"))?;
+    contents.push('\n');
+    let temporary = path.with_extension("json.tmp");
+    fs::write(&temporary, contents)
+        .map_err(|error| format!("검증자 임시 설정 저장 실패: {error}"))?;
+    fs::rename(&temporary, path)
+        .map_err(|error| format!("검증자 설정 교체 실패({}): {error}", path.display()))
+}
+
+fn multiaddr_peer_id(address: &Multiaddr) -> Option<libp2p::PeerId> {
+    address.iter().find_map(|protocol| match protocol {
+        Protocol::P2p(peer_id) => Some(peer_id),
+        _ => None,
+    })
 }
 
 fn load_validators(path: &Path) -> Result<Vec<Validator>, String> {
@@ -857,5 +980,37 @@ mod tests {
             }
             BootstrapConfig::Object { .. } => panic!("배열 형식이어야 합니다."),
         }
+    }
+
+    #[test]
+    fn validator_registration_requires_key_ownership_signature() {
+        let signer: ValidatorSigner = Wallet::from_seed([91; 32]).into();
+        let validator_id = signer.address();
+        let peer_id = libp2p::PeerId::random().to_string();
+        let registration = ValidatorRegistration {
+            validator_id: validator_id.clone(),
+            peer_id: peer_id.clone(),
+            signature_hex: signer
+                .sign_bytes(&ValidatorRegistration::bytes_to_sign(
+                    &validator_id,
+                    &peer_id,
+                ))
+                .unwrap(),
+        };
+        assert!(verify_validator_registration(&registration).is_ok());
+
+        let mut forged = registration;
+        forged.peer_id = libp2p::PeerId::random().to_string();
+        assert!(verify_validator_registration(&forged).is_err());
+    }
+
+    #[test]
+    fn bootstrap_node_does_not_dial_itself() {
+        let address: Multiaddr = DEFAULT_BOOTSTRAP_PEER.parse().unwrap();
+        let peer_id = multiaddr_peer_id(&address).unwrap();
+        assert_eq!(
+            peer_id.to_string(),
+            "12D3KooWAVRZjnbP8nXp8vD6irYFAXdLJVyczEFWdKLFzKnKDATx"
+        );
     }
 }

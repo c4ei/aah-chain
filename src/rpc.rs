@@ -104,6 +104,13 @@ impl RpcNodeHandle {
             .map_err(|_| "RPC 상태 쓰기 잠금이 손상되었습니다.".into())
     }
 
+    pub fn has_pending_transactions(&self) -> Result<bool, String> {
+        self.state
+            .read()
+            .map(|state| !state.pool.is_empty())
+            .map_err(|_| "RPC 상태 읽기 잠금이 손상되었습니다.".into())
+    }
+
     pub fn restore_transactions(&self, transactions: Vec<Transaction>) -> Result<(), String> {
         let mut state = self
             .state

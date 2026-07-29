@@ -26,6 +26,19 @@ pub const CONSENSUS_TOPIC: &str = "ieum-chain/consensus/1";
 pub const SYNC_TOPIC: &str = "ieum-chain/sync/2";
 pub const COMMUNICATION_PROTOCOL: &str = "/ieum-chain/communication/1";
 
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ValidatorRegistration {
+    pub validator_id: String,
+    pub peer_id: String,
+    pub signature_hex: String,
+}
+
+impl ValidatorRegistration {
+    pub fn bytes_to_sign(validator_id: &str, peer_id: &str) -> Vec<u8> {
+        format!("ieum-validator-registration-v1:{validator_id}:{peer_id}").into_bytes()
+    }
+}
+
 /// P2P 실행 시 바꿀 수 있는 네트워크·방어 설정입니다.
 #[derive(Clone, Debug)]
 pub struct NetworkConfig {
@@ -59,6 +72,7 @@ pub enum WireMessage {
     Proposal(SignedProposal),
     Consensus(ConsensusMessage),
     Evidence(DoubleVoteEvidence),
+    ValidatorRegistration(ValidatorRegistration),
     SyncRequest {
         requester: String,
         from_height: u64,
@@ -78,6 +92,7 @@ pub enum NetworkCommand {
     PublishConsensus(ConsensusMessage),
     PublishProposal(SignedProposal),
     PublishEvidence(DoubleVoteEvidence),
+    PublishValidatorRegistration(ValidatorRegistration),
     RequestSync {
         from_height: u64,
     },
@@ -137,6 +152,10 @@ pub enum NetworkEvent {
     EvidenceReceived {
         source: PeerId,
         evidence: DoubleVoteEvidence,
+    },
+    ValidatorRegistrationReceived {
+        source: PeerId,
+        registration: ValidatorRegistration,
     },
     SyncRequested {
         source: PeerId,
@@ -229,6 +248,14 @@ impl fmt::Display for NetworkEvent {
                 formatter,
                 "[P2P 이중투표 증거] PeerId: {source}, 증거: {}",
                 evidence.id()
+            ),
+            Self::ValidatorRegistrationReceived {
+                source,
+                registration,
+            } => write!(
+                formatter,
+                "[검증자 등록 수신] PeerId: {source}, 검증자: {}",
+                registration.validator_id
             ),
             Self::SyncRequested {
                 source,
@@ -415,6 +442,13 @@ impl P2pNode {
                             }
                             Some(NetworkCommand::PublishEvidence(evidence)) => {
                                 publish(&mut swarm, CONSENSUS_TOPIC, &WireMessage::Evidence(evidence));
+                            }
+                            Some(NetworkCommand::PublishValidatorRegistration(registration)) => {
+                                publish(
+                                    &mut swarm,
+                                    CONSENSUS_TOPIC,
+                                    &WireMessage::ValidatorRegistration(registration),
+                                );
                             }
                             Some(NetworkCommand::RequestSync { from_height }) => {
                                 publish(
@@ -653,6 +687,12 @@ async fn handle_swarm_event(
                     source: propagation_source,
                     evidence,
                 },
+                WireMessage::ValidatorRegistration(registration) => {
+                    NetworkEvent::ValidatorRegistrationReceived {
+                        source: propagation_source,
+                        registration,
+                    }
+                }
                 WireMessage::SyncRequest {
                     requester,
                     from_height,

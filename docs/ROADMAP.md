@@ -34,6 +34,7 @@
 | v0.18.0 | 보안 통신 기반 | WebRTC 연결 협상용 암호화 envelope와 로컬 RPC |
 | v0.18.1 | 직접 신호 전달 | 전체 통신 topic을 제거하고 libp2p request-response로 대상 PeerId에 직접 전달 |
 | v0.19.0 | 검증자 자동 선발 코어 | 1% 지분·국가별 보유 상위 50위·관리자 승인, 위임·가동률·QUIC 확인 정책 |
+| v0.19.2 | 제네시스 자동 합류 | server 기본 부트스트랩, 서명된 검증자 등록 전파, 4명 공통 집합·BFT 자동 시작 |
 
 ## 현재 제한
 
@@ -42,7 +43,7 @@
 - snapshot chunk 저장·재개 코어는 구현됐지만 P2P 병렬 chunk 요청과 peer별 재시도는 아직 없습니다.
 - 외부 signer 경계는 구현됐지만 제품별 PKCS#11/Vault/KMS adapter와 HA failover는 별도입니다.
 - IP 단위 연결 속도 제한, subnet diversity, ASN 다양성은 아직 없습니다.
-- `node.ieum.aah.name` 후보 등록 request-response와 epoch 자동 반영은 후속 네트워크
+- 운영망 5번째 이후 후보의 자격 증명 request-response와 epoch 자동 반영은 후속 네트워크
   결합이 필요합니다. 현재 버전은 결정론적 자격 계산 코어와 개발망 자동 구성을 제공합니다.
 - embedded key-value backend는 작은 테스트넷용이며 메인넷 전 RocksDB/SQLite WAL급 backend가 필요합니다.
 
