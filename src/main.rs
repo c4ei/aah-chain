@@ -19,6 +19,8 @@ const SERVER_INSTANCE_PORT: u16 = 49_889;
 const CLIENT_INSTANCE_PORT: u16 = 49_890;
 const SUPPORTED_PROTOCOL_VERSION: u32 = 2;
 
+mod installation;
+
 #[derive(Debug, Parser)]
 #[command(name = "ieum-chain", version, about = "가벼운 IEUM 테스트넷 노드")]
 struct Args {
@@ -104,7 +106,7 @@ struct NodeArgs {
     validator_key: PathBuf,
 
     /// 검증자 공개키와 투표권 설정
-    #[arg(long, default_value = "config/validators.example.json")]
+    #[arg(long, default_value = "config/validators.json")]
     validators_config: PathBuf,
 
     /// 검증자 전원이 동일하게 배포하는 승인된 시간 기반 이벤트 설정
@@ -209,7 +211,7 @@ async fn main() -> Result<(), String> {
                 node_key: PathBuf::from("data/client.node.key"),
                 validator_index: 1,
                 validator_key: PathBuf::from("config/validator.key"),
-                validators_config: PathBuf::from("config/validators.example.json"),
+                validators_config: PathBuf::from("config/validators.json"),
                 events_config: PathBuf::from("config/events.json"),
                 update_manifest_url: None,
                 release_public_key: None,
@@ -235,6 +237,14 @@ async fn main() -> Result<(), String> {
     };
     if !is_client {
         init_server_log("data/logs/ieum-chain.log")?;
+        installation::prepare_server_files(
+            &args.validator_key,
+            &args.node_key,
+            &args.rpc_data_dir,
+            &args.validators_config,
+            &args.events_config,
+            Path::new("config/upgrades.json"),
+        )?;
     }
     prepare_ports(&mut args, is_client)?;
     if let (Some(url), Some(public_key)) = (

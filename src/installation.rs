@@ -1,0 +1,215 @@
+use std::fs::{self, OpenOptions};
+use std::io::Write;
+use std::path::{Path, PathBuf};
+
+const MARKER_NAME: &str = ".ieum-initialized";
+
+/// 서버 최초 실행에 필요한 서버별 비밀키와 로컬 원장을 준비합니다.
+///
+/// 초기화 표시가 생긴 뒤 핵심 파일이 사라진 경우에는 새 신원을 자동 생성하지 않습니다.
+/// 운영자가 백업을 복구하기 전까지 중단해야 다른 검증자로 바뀌는 사고를 막을 수 있습니다.
+pub fn prepare_server_files(
+    validator_key: &Path,
+    node_key: &Path,
+    ledger_dir: &Path,
+    validators_config: &Path,
+    events_config: &Path,
+    upgrades_config: &Path,
+) -> Result<(), String> {
+    let marker = marker_path(ledger_dir);
+    if marker.exists() {
+        require_existing("validator.key", validator_key)?;
+        require_existing("server.node.key", node_key)?;
+        if !ledger_dir.exists() {
+            return Err(format!(
+                "기존 IEUM 설치에서 원장 경로가 없어 실행을 중단합니다: {}. \
+                 백업 원장을 복구해 주세요.",
+                ledger_dir.display()
+            ));
+        }
+        return require_shared_config(validators_config);
+    }
+
+    let ledger_has_data = ledger_dir
+        .read_dir()
+        .map(|mut entries| entries.next().is_some())
+        .unwrap_or(false);
+    if ledger_has_data && (!validator_key.exists() || !node_key.exists()) {
+        return Err(format!(
+            "기존 원장({})은 있지만 서버 키가 없습니다. 기존 노드일 수 있어 \
+             새 키를 자동 생성하지 않습니다. 백업을 복구해 주세요.",
+            ledger_dir.display()
+        ));
+    }
+
+    fs::create_dir_all(ledger_dir)
+        .map_err(|error| format!("원장 폴더 생성 실패({}): {error}", ledger_dir.display()))?;
+
+    let validator_public_key = if validator_key.exists() {
+        ieum_chain::validator_key::public_key_from_file(validator_key)?
+    } else {
+        let public_key = ieum_chain::validator_key::generate_key_file(validator_key)?;
+        println!("[자동 생성] {}", validator_key.display());
+        public_key
+    };
+
+    let identity = if node_key.exists() {
+        ieum_chain::node_key::load_or_create_node_key(node_key)?
+    } else {
+        let key = ieum_chain::node_key::load_or_create_node_key(node_key)?;
+        println!("[자동 생성] {}", node_key.display());
+        key
+    };
+    create_if_missing(
+        events_config,
+        "{\n  \"events\": []\n}\n",
+        "예약 이벤트 설정",
+    )?;
+    create_if_missing(
+        upgrades_config,
+        "{\n  \"upgrades\": []\n}\n",
+        "업그레이드 설정",
+    )?;
+    write_marker(
+        &marker,
+        &validator_public_key,
+        &libp2p::PeerId::from(identity.public()).to_string(),
+    )?;
+
+    println!("[자동 생성] {}", ledger_dir.display());
+    println!("[초기 설정 완료] 검증자 공개키: {validator_public_key}");
+    println!(
+        "[초기 설정 완료] PeerId: {}",
+        libp2p::PeerId::from(identity.public())
+    );
+    println!("위 공개키만 관리자에게 전달하세요. validator.key 내용은 절대 공유하지 마세요.");
+
+    require_shared_config(validators_config)
+}
+
+fn marker_path(ledger_dir: &Path) -> PathBuf {
+    ledger_dir.parent().unwrap_or(ledger_dir).join(MARKER_NAME)
+}
+
+fn require_existing(name: &str, path: &Path) -> Result<(), String> {
+    if path.exists() {
+        Ok(())
+    } else {
+        Err(format!(
+            "기존 IEUM 설치에서 {name} 파일이 없어 실행을 중단합니다: {}. \
+             새 키를 자동 생성하면 다른 노드가 되므로 백업 파일을 복구해 주세요.",
+            path.display()
+        ))
+    }
+}
+
+fn require_shared_config(path: &Path) -> Result<(), String> {
+    if path.exists() {
+        Ok(())
+    } else {
+        Err(format!(
+            "공통 검증자 설정이 아직 없습니다: {}\n\
+             이 서버와 다른 서버 3대의 공개키를 모아 validators.json을 만든 뒤 \
+             네 서버에 같은 파일을 복사하고 다시 실행해 주세요.",
+            path.display()
+        ))
+    }
+}
+
+fn create_if_missing(path: &Path, contents: &str, description: &str) -> Result<(), String> {
+    if path.exists() {
+        return Ok(());
+    }
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|error| format!("{description} 폴더 생성 실패: {error}"))?;
+    }
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)
+        .map_err(|error| format!("{description} 생성 실패({}): {error}", path.display()))?;
+    file.write_all(contents.as_bytes())
+        .and_then(|_| file.sync_all())
+        .map_err(|error| format!("{description} 저장 실패({}): {error}", path.display()))?;
+    println!("[자동 생성] {}", path.display());
+    Ok(())
+}
+
+fn write_marker(path: &Path, validator_public_key: &str, peer_id: &str) -> Result<(), String> {
+    let mut options = OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options
+        .open(path)
+        .map_err(|error| format!("초기화 표시 파일 생성 실패({}): {error}", path.display()))?;
+    writeln!(
+        file,
+        "version=1\nvalidator_public_key={validator_public_key}\npeer_id={peer_id}"
+    )
+    .and_then(|_| file.sync_all())
+    .map_err(|error| format!("초기화 표시 파일 저장 실패({}): {error}", path.display()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn temp_root(name: &str) -> PathBuf {
+        std::env::temp_dir().join(format!(
+            "ieum-installation-{}-{}-{name}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ))
+    }
+
+    #[test]
+    fn first_run_creates_private_files_and_stops_for_shared_config() {
+        let root = temp_root("first-run");
+        let result = prepare_server_files(
+            &root.join("config/validator.key"),
+            &root.join("data/server.node.key"),
+            &root.join("data/ledger"),
+            &root.join("config/validators.json"),
+            &root.join("config/events.json"),
+            &root.join("config/upgrades.json"),
+        );
+        assert!(result.unwrap_err().contains("공통 검증자 설정"));
+        assert!(root.join("config/validator.key").exists());
+        assert!(root.join("data/server.node.key").exists());
+        assert!(root.join("data/.ieum-initialized").exists());
+        assert!(root.join("data/ledger").is_dir());
+        assert!(root.join("config/events.json").exists());
+        assert!(root.join("config/upgrades.json").exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn initialized_node_never_regenerates_missing_validator_key() {
+        let root = temp_root("missing-key");
+        fs::create_dir_all(root.join("data/ledger")).unwrap();
+        fs::write(root.join("data/.ieum-initialized"), "version=1\n").unwrap();
+        fs::write(root.join("data/server.node.key"), "keep").unwrap();
+        let key = root.join("config/validator.key");
+        let error = prepare_server_files(
+            &key,
+            &root.join("data/server.node.key"),
+            &root.join("data/ledger"),
+            &root.join("config/validators.json"),
+            &root.join("config/events.json"),
+            &root.join("config/upgrades.json"),
+        )
+        .unwrap_err();
+        assert!(error.contains("자동 생성하면 다른 노드"));
+        assert!(!key.exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+}

@@ -1,135 +1,143 @@
-# IEUM Chain
+# IEUM Chain v0.17.1 쉬운 실행 안내
 
-현재 버전은 `0.15.1`이며, snapshot 재개, 다중 피어 state root 교차검증,
-embedded DB와 외부 signer/HSM 연동 경계를 추가한
-폐쇄형 테스트넷 단계입니다. 자세한 내용은
-단계별 변경은 `docs/end/20260728_v0.0.11.2_CI_STABILIZATION.md`부터
-`docs/end/20260728_v0.0.15.1_WEIGHTED_ACCOUNT_SECURITY.md`까지 참고하세요.
+IEUM Chain은 Ubuntu와 Windows에서 실행할 수 있는 경량 블록체인 노드입니다.
+현재 권장 테스트 구성은 **Ubuntu VM 검증자 3대 + Windows VM 검증자 1대**입니다.
 
-## 노드와 지갑 RPC 실행
+> 아직 사설 테스트넷 단계입니다. 실제 자산이나 중요한 개인정보를 보관하지 마세요.
 
-```bash
-cargo run -- server --port 7001 --allow-insecure-test-keys
-```
+## 가장 먼저 알아둘 것
 
-- `--port`: 노드 간 QUIC/P2P UDP 포트
-- `--rpc-port`: 월렛/geth 호환 HTTP JSON-RPC TCP 포트(기본 `8989`)
-- RPC 기본 리스닝 주소는 외부에서 접근할 수 없는 `127.0.0.1`입니다.
-- 운영 서버에서 Caddy는 `127.0.0.1:8989`로 reverse proxy하고, RPC 포트를 인터넷에
-  직접 열지 않습니다.
-- 옵션 없이 실행하면 일반 PC 노드로 시작하고 기본 운영 서버에 자동 연결합니다.
+- VM 4대는 서로 다른 고정 IP를 사용합니다.
+- P2P는 `UDP 7001`, RPC는 기본적으로 자기 PC만 접근 가능한 `127.0.0.1:8989`를 사용합니다.
+- 네 서버의 `validator.key`, `server.node.key`, `data/ledger`는 서로 달라야 합니다.
+- 처음 실행하면 위 파일과 폴더를 각 서버에서 자동 생성합니다.
+- `config/validators.json`만 네 서버에 완전히 동일하게 복사합니다.
+- 개인키 파일은 메일, 메신저, 클라우드 드라이브로 보내지 마세요.
 
-> 사람과 사람, 체인과 체인, 가치와 생활을 잇는 가벼운 블록체인
+## Ubuntu에서 실행
 
-- 네트워크 이름: `IEUM`
-- 네이티브 코인 심볼: `IEUM`
-- EVM 호환 Chain ID: `21004`
-- 프로젝트/실행 파일: `ieum-chain`
-- 기존 `IEUM` geth 네트워크(Chain ID `21133`)와는 별개의 체인입니다.
-
-IEUM Chain을 배우며 확장하는 Rust 기반 경량 블록체인 테스트넷입니다.
-현재 버전은 `0.15.1`이며, 4노드 BFT 확정, snapshot 재개, 다중 피어
-state root 교차검증, embedded DB와 외부 signer 연동 경계를 지원합니다.
-
-> 주의: 학습·사설 테스트넷용 코드입니다. 실제 자산을 맡기는 메인넷에 사용하지 마세요.
-
-## 현재 구현
-
-- Ed25519 지갑, 주소, 서명 거래
-- 잔액, nonce, 수수료, mempool
-- 블록 생성·검증, JSON 저장·복구, 체크포인트
-- 거래가 없을 때 빈 블록 생략
-- QUIC 기반 암호화 P2P
-- mDNS(같은 LAN)와 Kademlia DHT(외부망) 피어 검색
-- Gossipsub 다중 피어 메시지 전파
-- 메시지 크기 제한, idle timeout, 잘못된 메시지 점수와 임시 차단
-- stake 가중치 2/3 초과 prevote/precommit BFT 상태기계
-- 합의 투표 Ed25519 서명 검증
-- 합의 WAL 저장·복구와 로컬 이중서명 방지
-- 주요 소스의 한국어 학습 주석
-- 필요할 때만 접속하는 모바일·웹 클라이언트 구조 문서
-
-상세 진행표는 [docs/ROADMAP.md](docs/ROADMAP.md)를 참고하세요.
-전체 목표 구조는 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)에 정리했습니다.
-간헐 접속 클라이언트 설계는 [docs/CLIENT.md](docs/CLIENT.md)를 참고하세요.
-버전별 변경 내용은 [CHANGELOG.md](CHANGELOG.md)에 기록합니다.
-
-## Ubuntu 설치
+처음 한 번만 설치합니다.
 
 ```bash
 sudo apt update
-sudo apt install -y build-essential pkg-config libssl-dev curl
+sudo apt install -y build-essential pkg-config libssl-dev curl git
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 source "$HOME/.cargo/env"
-rustup update stable
 ```
 
-VS Code 확장은 `rust-analyzer`를 설치하면 됩니다.
-
-## 빌드와 테스트
+소스를 받은 폴더에서 빌드하고 실행합니다.
 
 ```bash
-cargo fmt --check
-cargo clippy --all-targets --all-features -- -D warnings
-cargo test
-cargo run --release -- server
+cargo build --release --locked
+./target/release/ieum-chain server
 ```
 
-같은 공유기 안에서 두 번째 터미널:
-
-```bash
-cargo run --release
-```
-
-같은 LAN에서는 mDNS도 피어를 찾으며, 외부망에서는 `config/bootstrap.json`의
-운영 서버 주소를 자동으로 사용합니다.
-
-방화벽에서는 해당 포트의 **UDP**를 열어야 합니다. TCP 7001만 열면 QUIC가 연결되지 않습니다.
-운영 명령과 일반 PC 명령의 전체 설명은
-[`docs/IEUM_SERVER_CLIENT_RUN.md`](docs/IEUM_SERVER_CLIENT_RUN.md)를 참고합니다.
-
-## 표준화한 폴더 구조
+처음 실행하면 자동으로 다음 항목을 만듭니다.
 
 ```text
-ieum-chain/
-├── .vscode/              VS Code 공통 설정
-├── config/               노드·검증자 설정 예제
-├── docs/                 설계, 진행상태, 운영·보안 문서
-├── src/
-│   ├── chain.rs          블록체인 상태와 검증
-│   ├── consensus.rs      PoS 가중 BFT 상태기계
-│   ├── consensus_wal.rs  합의 투표 기록·복구와 이중서명 방지
-│   ├── network.rs        QUIC/libp2p와 피어 검색
-│   ├── peer_guard.rs     악성 피어 점수·차단
-│   ├── mempool.rs        거래 대기소
-│   ├── model.rs          거래·블록 모델
-│   ├── storage.rs        로컬 저장·복구
-│   ├── checkpoint.rs     빈 구간 체크포인트
-│   ├── wallet.rs         키·주소·서명
-│   ├── lib.rs            재사용 가능한 코어 공개
-│   └── main.rs           노드 실행 파일
-├── tests/                통합 테스트(다음 단계에서 확대)
-├── CHANGELOG.md           버전별 변경 기록
-├── Cargo.toml            Rust 패키지와 의존성
-└── README.md
+config/validator.key
+data/server.node.key
+data/ledger/
+config/events.json
+data/.ieum-initialized
 ```
 
-프로젝트가 커지면 `crates/ieum-network`, `crates/ieum-consensus`,
-`crates/ieum-ledger`, `apps/ieum-node`의 Cargo workspace로 분리합니다.
-지금은 배우기 쉽도록 한 crate 안에서 모듈만 나눴습니다.
+화면에 표시되는 **검증자 공개키**만 기록합니다. 공통 `validators.json`이 아직
+없으면 서버는 안전하게 멈춥니다. 오류가 아니라 최초 등록 단계입니다.
 
-cargo build --release
-./target/release/ieum-chain server
-./target/release/ieum-chain
+## Windows에서 실행
 
+미리 빌드된 `ieum-chain.exe`가 있으면 원하는 폴더에 아래처럼 둡니다.
 
+```text
+C:\ieum-chain\ieum-chain.exe
+```
 
-cd ~/ieum/ieum-chain
-tar -xJf ieum_chain_v0_0_15_1_changed_only.tar.xz
+PowerShell에서 실행합니다.
 
-cargo fmt --all
-cargo fmt --all --check
-cargo clippy --all-targets --all-features --locked -- -D warnings
-cargo test --all-targets --all-features --locked
+```powershell
+cd C:\ieum-chain
+.\ieum-chain.exe server
+```
+
+직접 빌드하려면 Rustup, Git for Windows, Visual Studio 2022 Build Tools의
+`Desktop development with C++`를 설치한 뒤 실행합니다.
+
+```powershell
+git clone https://github.com/c4ei/ieum-chain.git
+cd ieum-chain
 cargo build --release --locked
-bash tests/four_process_network.sh target/release/ieum-chain
+.\target\release\ieum-chain.exe server
+```
+
+관리자 PowerShell에서 P2P 방화벽을 한 번 허용합니다.
+
+```powershell
+New-NetFirewallRule -DisplayName "IEUM P2P UDP 7001" -Direction Inbound -Protocol UDP -LocalPort 7001 -Action Allow
+```
+
+## 네 검증자 등록
+
+네 서버를 각각 한 번 실행해 공개키 4개를 모읍니다. Ubuntu 1번에서 공통 설정을 만듭니다.
+
+```bash
+./target/release/ieum-chain validator-key create-config \
+  --public-key <Ubuntu1_공개키> \
+  --public-key <Ubuntu2_공개키> \
+  --public-key <Ubuntu3_공개키> \
+  --public-key <Windows_공개키> \
+  --output config/validators.json
+```
+
+생성된 `config/validators.json`을 나머지 세 서버의 같은 위치에 복사합니다.
+공개키를 넣은 순서가 서버 번호입니다.
+
+```text
+Ubuntu 1 = validator-index 1
+Ubuntu 2 = validator-index 2
+Ubuntu 3 = validator-index 3
+Windows  = validator-index 4
+```
+
+각 서버는 자기 번호로 실행합니다.
+
+```bash
+./target/release/ieum-chain server --validator-index 1
+```
+
+```powershell
+.\ieum-chain.exe server --validator-index 4
+```
+
+다른 네트워크의 서버에 연결할 때만 1번 서버의 IP와 PeerId를 넣습니다.
+
+```bash
+./target/release/ieum-chain server --validator-index 2 \
+  --peer "/ip4/192.168.1.201/udp/7001/quic-v1/p2p/<1번_PeerId>"
+```
+
+## 키나 원장이 없어졌다는 오류가 나오면
+
+처음 설치가 끝난 뒤 `validator.key`, `server.node.key`, `data/ledger`가 없어지면
+프로그램은 새 파일을 만들지 않고 중단합니다. 자동으로 다시 만들면 다른 검증자로
+바뀌기 때문입니다. 이때는 백업을 복구해야 합니다.
+
+백업할 항목:
+
+```text
+config/validator.key
+data/server.node.key
+data/ledger/
+data/.ieum-initialized
+```
+
+## 메시지·화상채팅·원격 도움
+
+peer 간 메시지와 화상채팅은 기술적으로 가능합니다. 다만 블록체인 원장에 메시지,
+통화 내용, 화면 영상을 기록하면 안 됩니다. 별도의 종단간 암호화 통신 계층으로
+구현해야 합니다.
+
+현재 v0.17.1에는 채팅·화상·원격 제어 기능 자체는 포함하지 않았습니다. 안전한 구현
+조건과 단계는 [보안 통신 설계 문서](docs/SECURE_PEER_COMMUNICATION.md)를 참고하세요.
+
+개발자용 빌드, 테스트, 구조 설명은 [README_DEV.md](README_DEV.md)를 참고하세요.
