@@ -1,5 +1,15 @@
 # 변경 기록
 
+## 0.18.0 - 2026-07-29
+
+- 지갑 WebRTC 계층을 위한 peer 간 암호화 통신 신호 전달 코어를 추가했습니다.
+- 통화 초대·수락·거절, offer/answer, ICE, 종료, 암호화 채팅 종류를 지원합니다.
+- 통신 신호는 120초 이내 만료, 64KiB 이하 암호문만 허용하고 중복 id를 거부합니다.
+- 실제 발신 PeerId와 메시지 발신자가 다르면 거부하며 대상 peer만 수신합니다.
+- `ieum_sendCommunication`, `ieum_pollCommunication` 로컬 RPC를 추가했습니다.
+- 영상·음성·채팅 평문은 블록, 원장, DB에 저장하지 않습니다.
+- IEUM 송금은 기존 `eth_sendTransaction`과 `eth_sendRawTransaction`을 지갑 UI에서 사용합니다.
+
 ## 0.17.1 - 2026-07-29
 
 - `server` 최초 실행 시 검증자 키, 노드 키, 원장 폴더와 빈 운영 설정을 자동 생성합니다.

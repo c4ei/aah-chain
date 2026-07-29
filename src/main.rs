@@ -355,6 +355,12 @@ async fn main() -> Result<(), String> {
     loop {
         tokio::select! {
             _ = consensus_tick.tick() => {
+                for envelope in rpc.drain_outbound_communication()? {
+                    commands
+                        .send(NetworkCommand::PublishCommunication(envelope))
+                        .await
+                        .map_err(|error| error.to_string())?;
+                }
                 let timed_out_transactions = consensus.pending_transactions();
                 if consensus.timeout_if_due(std::time::Instant::now())? {
                     rpc.restore_transactions(timed_out_transactions)?;
@@ -418,6 +424,9 @@ async fn main() -> Result<(), String> {
                     }
                     Some(NetworkEvent::TransactionReceived { transaction, .. }) => {
                         rpc.restore_transactions(vec![transaction])?;
+                    }
+                    Some(NetworkEvent::CommunicationReceived { envelope, .. }) => {
+                        rpc.receive_communication(envelope, unix_timestamp())?;
                     }
                     Some(NetworkEvent::ProposalReceived { proposal, .. }) if !is_client => {
                         match consensus.receive_proposal(proposal) {

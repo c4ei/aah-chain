@@ -1,6 +1,7 @@
 use crate::model::{Block, Transaction};
 use crate::{
-    ArchiveStore, Blockchain, GenesisConfig, Keystore, Mempool, StateStore, account::AccountWallet,
+    ArchiveStore, Blockchain, CommunicationEnvelope, CommunicationInbox, GenesisConfig, Keystore,
+    Mempool, StateStore, account::AccountWallet,
 };
 use axum::{Json, Router, routing::post};
 use serde_json::{Value, json};
@@ -8,6 +9,7 @@ use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 /// geth/web3 도구가 접속할 HTTP JSON-RPC 설정입니다.
 #[derive(Clone, Debug)]
@@ -48,6 +50,9 @@ struct RpcState {
     sync_highest: u64,
     sync_active: bool,
     started_at: std::time::Instant,
+    communication_inbox: CommunicationInbox,
+    communication_outbox: CommunicationInbox,
+    communication_rpc_enabled: bool,
 }
 
 /// 기존 geth 스크립트에서 자주 쓰는 계정·잔액·송금 API를 제공하는 호환 계층입니다.
@@ -66,6 +71,25 @@ pub struct RpcNodeHandle {
 }
 
 impl RpcNodeHandle {
+    pub fn drain_outbound_communication(&self) -> Result<Vec<CommunicationEnvelope>, String> {
+        self.state
+            .write()
+            .map(|mut state| state.communication_outbox.drain())
+            .map_err(|_| "RPC 상태 쓰기 잠금이 손상되었습니다.".into())
+    }
+
+    pub fn receive_communication(
+        &self,
+        envelope: CommunicationEnvelope,
+        now: u64,
+    ) -> Result<(), String> {
+        self.state
+            .write()
+            .map_err(|_| "RPC 상태 쓰기 잠금이 손상되었습니다.".to_string())?
+            .communication_inbox
+            .push(envelope, now)
+    }
+
     pub fn chain(&self) -> Result<Blockchain, String> {
         self.state
             .read()
@@ -251,6 +275,9 @@ impl RpcServer {
                 sync_highest: initial_height,
                 sync_active: false,
                 started_at: std::time::Instant::now(),
+                communication_inbox: CommunicationInbox::default(),
+                communication_outbox: CommunicationInbox::default(),
+                communication_rpc_enabled: config.listen_ip.is_loopback(),
             })),
             config,
         }
@@ -344,7 +371,8 @@ fn dispatch(
             "eth": "1.0",
             "net": "1.0",
             "personal": "1.0",
-            "web3": "1.0"
+            "web3": "1.0",
+            "ieumCommunication": "1.0"
         })),
         "eth_chainId" => {
             let state = read_state(state)?;
@@ -591,6 +619,38 @@ fn dispatch(
                 "uptimeSeconds": state.started_at.elapsed().as_secs()
             }))
         }
+        "ieum_sendCommunication" => {
+            if !read_state(state)?.communication_rpc_enabled {
+                return Err((
+                    -32000,
+                    "보안 통신 RPC는 localhost에서만 사용할 수 있습니다.".into(),
+                ));
+            }
+            let value = params
+                .first()
+                .cloned()
+                .ok_or_else(|| (-32602, "암호화 통신 메시지 객체가 필요합니다.".into()))?;
+            let envelope: CommunicationEnvelope = serde_json::from_value(value)
+                .map_err(|error| (-32602, format!("통신 메시지 형식 오류: {error}")))?;
+            let now = unix_timestamp().map_err(|message| (-32603, message))?;
+            let id = envelope.id.clone();
+            write_state(state)?
+                .communication_outbox
+                .push(envelope, now)
+                .map_err(|message| (-32602, message))?;
+            Ok(json!(id))
+        }
+        "ieum_pollCommunication" => {
+            let mut state = write_state(state)?;
+            if !state.communication_rpc_enabled {
+                return Err((
+                    -32000,
+                    "보안 통신 RPC는 localhost에서만 사용할 수 있습니다.".into(),
+                ));
+            }
+            let messages = state.communication_inbox.drain();
+            serde_json::to_value(messages).map_err(|error| (-32603, error.to_string()))
+        }
         "eth_sendTransaction" | "personal_sendTransaction" => send_transaction(state, params),
         "eth_sendRawTransaction" => send_raw_transaction(state, params),
         _ => Err((-32601, format!("지원하지 않는 JSON-RPC 메서드: {method}"))),
@@ -672,6 +732,13 @@ fn send_transaction(
         .map_err(|message| (-32000, message))?;
 
     Ok(json!(transaction_id))
+}
+
+fn unix_timestamp() -> Result<u64, String> {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .map_err(|error| format!("시스템 시각 오류: {error}"))
 }
 
 fn resolve_ledger_address(state: &RpcState, address: &str) -> String {

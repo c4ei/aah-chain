@@ -1,3 +1,4 @@
+use crate::communication::CommunicationEnvelope;
 use crate::consensus::{ConsensusMessage, DoubleVoteEvidence, FinalityCertificate, SignedProposal};
 use crate::model::{Block, Transaction};
 use crate::peer_guard::{PeerDecision, PeerGuard};
@@ -22,6 +23,7 @@ use tokio::sync::mpsc;
 pub const BLOCK_TOPIC: &str = "ieum-chain/blocks/1";
 pub const CONSENSUS_TOPIC: &str = "ieum-chain/consensus/1";
 pub const SYNC_TOPIC: &str = "ieum-chain/sync/2";
+pub const COMMUNICATION_TOPIC: &str = "ieum-chain/communication/1";
 
 /// P2P 실행 시 바꿀 수 있는 네트워크·방어 설정입니다.
 #[derive(Clone, Debug)]
@@ -65,6 +67,8 @@ pub enum WireMessage {
         tip: SyncTip,
         certificates: Vec<FinalityCertificate>,
     },
+    /// WebRTC/채팅의 짧은 수명 종단간 암호화 연결 협상 메시지입니다.
+    Communication(CommunicationEnvelope),
 }
 
 /// 노드 코어가 비동기 P2P 작업에 보내는 명령입니다.
@@ -84,6 +88,7 @@ pub enum NetworkCommand {
         certificates: Vec<FinalityCertificate>,
     },
     Dial(Multiaddr),
+    PublishCommunication(CommunicationEnvelope),
     Shutdown,
 }
 
@@ -143,6 +148,10 @@ pub enum NetworkEvent {
         source: PeerId,
         tip: SyncTip,
         certificates: Vec<FinalityCertificate>,
+    },
+    CommunicationReceived {
+        source: PeerId,
+        envelope: CommunicationEnvelope,
     },
 }
 
@@ -239,6 +248,11 @@ impl fmt::Display for NetworkEvent {
                 "[P2P 동기화 응답] PeerId: {source}, 확정 블록: {}개",
                 certificates.len()
             ),
+            Self::CommunicationReceived { source, envelope } => write!(
+                formatter,
+                "[보안 통신 신호 수신] PeerId: {source}, 종류: {:?}, id: {}",
+                envelope.kind, envelope.id
+            ),
         }
     }
 }
@@ -326,6 +340,7 @@ impl P2pNode {
                     gossipsub.subscribe(&gossipsub::IdentTopic::new(BLOCK_TOPIC))?;
                     gossipsub.subscribe(&gossipsub::IdentTopic::new(CONSENSUS_TOPIC))?;
                     gossipsub.subscribe(&gossipsub::IdentTopic::new(SYNC_TOPIC))?;
+                    gossipsub.subscribe(&gossipsub::IdentTopic::new(COMMUNICATION_TOPIC))?;
 
                     let mdns = mdns::tokio::Behaviour::new(mdns::Config::default(), peer_id)?;
                     let store = kad::store::MemoryStore::new(peer_id);
@@ -413,6 +428,14 @@ impl P2pNode {
                                 if let Err(error) = dial_address(&mut swarm, address).await {
                                     crate::log_error!("{error}");
                                 }
+                            }
+                            Some(NetworkCommand::PublishCommunication(mut envelope)) => {
+                                envelope.sender_peer_id = local_peer_id.to_string();
+                                publish(
+                                    &mut swarm,
+                                    COMMUNICATION_TOPIC,
+                                    &WireMessage::Communication(envelope),
+                                );
                             }
                             Some(NetworkCommand::Shutdown) | None => break,
                         }
@@ -567,6 +590,7 @@ async fn handle_swarm_event(
             message,
             ..
         })) => {
+            let authenticated_source = message.source.unwrap_or(propagation_source);
             let peer_key = propagation_source.to_string();
             if guard.check(&peer_key) == PeerDecision::TemporarilyBlocked {
                 return Ok(());
@@ -627,6 +651,24 @@ async fn handle_swarm_event(
                         source: propagation_source,
                         tip,
                         certificates,
+                    }
+                }
+                WireMessage::Communication(envelope) => {
+                    if envelope.target_peer_id != swarm.local_peer_id().to_string() {
+                        return Ok(());
+                    }
+                    if envelope.sender_peer_id != authenticated_source.to_string() {
+                        guard.penalize(&peer_key, 50);
+                        return Err("통신 메시지 발신 PeerId가 실제 연결과 다릅니다.".into());
+                    }
+                    let now = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map_err(|error| format!("시스템 시각 오류: {error}"))?
+                        .as_secs();
+                    envelope.validate(now)?;
+                    NetworkEvent::CommunicationReceived {
+                        source: authenticated_source,
+                        envelope,
                     }
                 }
             };

@@ -3,6 +3,7 @@ pub mod account_security;
 pub mod archive;
 pub mod chain;
 pub mod checkpoint;
+pub mod communication;
 pub mod consensus;
 pub mod consensus_era;
 pub mod consensus_runtime;
@@ -38,6 +39,10 @@ pub use account_security::{AccountKey, AccountPolicy, Authorization, Permission,
 pub use archive::ArchiveStore;
 pub use chain::{Blockchain, FEE_BPS_DENOMINATOR, FOUNDATION_FEE_ADDRESS, FOUNDATION_FEE_BPS};
 pub use checkpoint::Checkpoint;
+pub use communication::{
+    CommunicationEnvelope, CommunicationInbox, CommunicationKind, MAX_ENCRYPTED_SIGNAL_BYTES,
+    MAX_PENDING_SIGNALS, MAX_SIGNAL_TTL_SECONDS,
+};
 pub use consensus::{
     BftConsensus, ConsensusMessage, ConsensusPhase, DoubleVoteEvidence, FinalityCertificate,
     SignedProposal, Validator,
