@@ -28,7 +28,12 @@ pub fn prepare_server_files(
                 ledger_dir.display()
             ));
         }
-        return prepare_validators_config(validators_config, allow_insecure_test_keys);
+        let validator_public_key = ieum_chain::validator_key::public_key_from_file(validator_key)?;
+        return prepare_validators_config(
+            validators_config,
+            &validator_public_key,
+            allow_insecure_test_keys,
+        );
     }
 
     let ledger_has_data = ledger_dir
@@ -85,10 +90,18 @@ pub fn prepare_server_files(
     );
     println!("위 공개키만 관리자에게 전달하세요. validator.key 내용은 절대 공유하지 마세요.");
 
-    prepare_validators_config(validators_config, allow_insecure_test_keys)
+    prepare_validators_config(
+        validators_config,
+        &validator_public_key,
+        allow_insecure_test_keys,
+    )
 }
 
-fn prepare_validators_config(path: &Path, allow_insecure_test_keys: bool) -> Result<(), String> {
+fn prepare_validators_config(
+    path: &Path,
+    local_validator_public_key: &str,
+    allow_insecure_test_keys: bool,
+) -> Result<(), String> {
     if path.exists() {
         return Ok(());
     }
@@ -100,7 +113,17 @@ fn prepare_validators_config(path: &Path, allow_insecure_test_keys: bool) -> Res
         println!("[개발망 자동 생성] {}", path.display());
         return Ok(());
     }
-    require_shared_config(path)
+    ieum_chain::validator_key::create_validators_config(
+        path,
+        &[local_validator_public_key.to_owned()],
+        100,
+    )?;
+    println!("[제네시스 검증자 자동 등록] {}", path.display());
+    println!(
+        "[부트스트랩 모드] 현재 검증자 1명으로 시작합니다. \
+         새 검증자는 등록 검증 후 다음 epoch에 합류합니다."
+    );
+    Ok(())
 }
 
 fn testnet_validator_seed(index: u8) -> [u8; 32] {
@@ -118,19 +141,6 @@ fn require_existing(name: &str, path: &Path) -> Result<(), String> {
         Err(format!(
             "기존 IEUM 설치에서 {name} 파일이 없어 실행을 중단합니다: {}. \
              새 키를 자동 생성하면 다른 노드가 되므로 백업 파일을 복구해 주세요.",
-            path.display()
-        ))
-    }
-}
-
-fn require_shared_config(path: &Path) -> Result<(), String> {
-    if path.exists() {
-        Ok(())
-    } else {
-        Err(format!(
-            "공통 검증자 설정이 아직 없습니다: {}\n\
-             이 서버와 다른 서버 3대의 공개키를 모아 validators.json을 만든 뒤 \
-             네 서버에 같은 파일을 복사하고 다시 실행해 주세요.",
             path.display()
         ))
     }
@@ -192,9 +202,9 @@ mod tests {
     }
 
     #[test]
-    fn first_run_creates_private_files_and_stops_for_shared_config() {
+    fn first_run_creates_single_validator_config_and_starts() {
         let root = temp_root("first-run");
-        let result = prepare_server_files(
+        prepare_server_files(
             &root.join("config/validator.key"),
             &root.join("data/server.node.key"),
             &root.join("data/ledger"),
@@ -202,14 +212,16 @@ mod tests {
             &root.join("config/events.json"),
             &root.join("config/upgrades.json"),
             false,
-        );
-        assert!(result.unwrap_err().contains("공통 검증자 설정"));
+        )
+        .unwrap();
         assert!(root.join("config/validator.key").exists());
         assert!(root.join("data/server.node.key").exists());
         assert!(root.join("data/.ieum-initialized").exists());
         assert!(root.join("data/ledger").is_dir());
         assert!(root.join("config/events.json").exists());
         assert!(root.join("config/upgrades.json").exists());
+        let config = fs::read_to_string(root.join("config/validators.json")).unwrap();
+        assert_eq!(config.matches("\"id\"").count(), 1);
         fs::remove_dir_all(root).unwrap();
     }
 

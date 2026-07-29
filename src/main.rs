@@ -278,6 +278,13 @@ async fn main() -> Result<(), String> {
     let rpc = rpc_server.node_handle();
     let mut rpc_task = tokio::spawn(rpc_server.run());
     let validators = load_validators(&args.validators_config)?;
+    if !is_client && validators.len() < 4 {
+        log_info!(
+            "[부트스트랩 합의] 현재 검증자 {}명입니다. 4명 이상 등록되기 전에는 \
+             장애 허용 BFT가 아니라 개발·초기 구성 모드로 동작합니다.",
+            validators.len()
+        );
+    }
     let local_validator: ValidatorSigner = if is_client {
         Wallet::new().into()
     } else if let (Some(command), Some(public_key)) = (
@@ -681,8 +688,8 @@ fn load_validators(path: &Path) -> Result<Vec<Validator>, String> {
     if config.chain_id != "21004" {
         return Err("검증자 설정 chain_id는 21004여야 합니다.".into());
     }
-    if config.validators.len() < 4 {
-        return Err("BFT 검증자는 최소 4개가 필요합니다.".into());
+    if config.validators.is_empty() {
+        return Err("검증자는 최소 1개가 필요합니다.".into());
     }
     Ok(config.validators)
 }

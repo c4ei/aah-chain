@@ -33,8 +33,8 @@ pub fn create_validators_config(
     public_keys: &[String],
     voting_power: u64,
 ) -> Result<(), String> {
-    if public_keys.len() < 4 {
-        return Err("BFT 운영 설정에는 공개키가 최소 4개 필요합니다.".into());
+    if public_keys.is_empty() {
+        return Err("검증자 공개키가 최소 1개 필요합니다.".into());
     }
     if voting_power == 0 {
         return Err("검증자 voting power는 0보다 커야 합니다.".into());
@@ -162,6 +162,18 @@ mod tests {
         assert_eq!(config["chain_id"], CHAIN_ID);
         assert_eq!(config["validators"].as_array().unwrap().len(), 4);
         assert_eq!(config["validators"][0]["id"], keys[0]);
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn config_allows_one_genesis_validator_during_bootstrap() {
+        let path = temp_path("single-validator.json");
+        let key = Wallet::from_seed([9; 32]).address();
+        create_validators_config(&path, std::slice::from_ref(&key), 100).unwrap();
+        let config: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(config["validators"].as_array().unwrap().len(), 1);
+        assert_eq!(config["validators"][0]["id"], key);
         fs::remove_file(path).unwrap();
     }
 }

@@ -400,8 +400,8 @@ pub struct BftConsensus {
 
 impl BftConsensus {
     pub fn new(validators: Vec<Validator>) -> Result<Self, String> {
-        if validators.len() < 4 {
-            return Err("BFT 테스트넷은 최소 4개 검증자를 권장합니다.".into());
+        if validators.is_empty() {
+            return Err("BFT 검증자는 최소 1개 필요합니다.".into());
         }
         let mut map = HashMap::new();
         for validator in validators {

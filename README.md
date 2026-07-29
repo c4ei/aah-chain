@@ -1,7 +1,8 @@
-# IEUM Chain v0.19.0 쉬운 실행 안내
+# IEUM Chain v0.19.1 쉬운 실행 안내
 
 IEUM Chain은 Ubuntu와 Windows에서 실행할 수 있는 경량 블록체인 노드입니다.
-현재 권장 테스트 구성은 **Ubuntu VM 검증자 3대 + Windows VM 검증자 1대**입니다.
+첫 노드는 제네시스 상태에서 단독으로 시작할 수 있습니다. 장애 허용 BFT 검증은
+**Ubuntu VM 검증자 3대 + Windows VM 검증자 1대**처럼 4명 이상일 때 활성화합니다.
 
 > 아직 사설 테스트넷 단계입니다. 실제 자산이나 중요한 개인정보를 보관하지 마세요.
 
@@ -11,7 +12,8 @@ IEUM Chain은 Ubuntu와 Windows에서 실행할 수 있는 경량 블록체인 �
 - P2P는 `UDP 7001`, RPC는 기본적으로 자기 PC만 접근 가능한 `127.0.0.1:8989`를 사용합니다.
 - 네 서버의 `validator.key`, `server.node.key`, `data/ledger`는 서로 달라야 합니다.
 - 처음 실행하면 위 파일과 폴더를 각 서버에서 자동 생성합니다.
-- `config/validators.json`만 네 서버에 완전히 동일하게 복사합니다.
+- 최초 실행에서는 로컬 공개키 1개로 `config/validators.json`이 자동 생성됩니다.
+- 2번째 이후 후보는 등록·검증을 거쳐 다음 epoch의 공통 검증자 세트에 반영합니다.
 - 개인키 파일은 메일, 메신저, 클라우드 드라이브로 보내지 마세요.
 
 `--allow-insecure-test-keys`를 사용하는 개발망과 CI는 검증자 설정 4개를 자동
