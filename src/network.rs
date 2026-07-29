@@ -622,6 +622,12 @@ async fn handle_swarm_event(
     match event {
         SwarmEvent::Behaviour(IeumBehaviourEvent::Mdns(mdns::Event::Discovered(peers))) => {
             for (peer, address) in peers {
+                // 다른 로컬 프로세스가 광고한 loopback·Docker bridge 주소는 그 프로세스
+                // 바깥에서 같은 PeerId를 보장하지 않습니다. 이를 Kademlia에 넣으면
+                // 주소의 실제 노드와 예상 PeerId가 달라지는 반복 dial 오류가 발생합니다.
+                if is_process_local_address(&address) {
+                    continue;
+                }
                 swarm.behaviour_mut().gossipsub.add_explicit_peer(&peer);
                 swarm.behaviour_mut().kademlia.add_address(&peer, address);
                 let _ = event_tx.send(NetworkEvent::PeerDiscovered(peer)).await;
@@ -635,6 +641,9 @@ async fn handle_swarm_event(
         SwarmEvent::Behaviour(IeumBehaviourEvent::Identify(event)) => {
             if let identify::Event::Received { peer_id, info, .. } = *event {
                 for address in info.listen_addrs {
+                    if is_process_local_address(&address) {
+                        continue;
+                    }
                     swarm
                         .behaviour_mut()
                         .kademlia
@@ -844,6 +853,18 @@ async fn handle_swarm_event(
     Ok(())
 }
 
+fn is_process_local_address(address: &Multiaddr) -> bool {
+    address.iter().any(|protocol| match protocol {
+        Protocol::Ip4(ip) => {
+            ip.is_loopback()
+                || ip.is_unspecified()
+                || (ip.octets()[0] == 172 && (16..=31).contains(&ip.octets()[1]))
+        }
+        Protocol::Ip6(ip) => ip.is_loopback() || ip.is_unspecified(),
+        _ => false,
+    })
+}
+
 fn validate_direct_communication(
     local_peer_id: &PeerId,
     source: &PeerId,
@@ -900,6 +921,16 @@ mod connection_log_tests {
     fn extracts_ipv4_from_multiaddr() {
         let address: Multiaddr = "/ip4/192.168.1.193/udp/7001/quic-v1".parse().unwrap();
         assert_eq!(multiaddr_ip(&address).as_deref(), Some("192.168.1.193"));
+    }
+
+    #[test]
+    fn ignores_loopback_and_docker_advertised_addresses() {
+        let loopback: Multiaddr = "/ip4/127.0.0.1/udp/7001/quic-v1".parse().unwrap();
+        let docker: Multiaddr = "/ip4/172.18.0.1/udp/7001/quic-v1".parse().unwrap();
+        let lan: Multiaddr = "/ip4/192.168.1.20/udp/7001/quic-v1".parse().unwrap();
+        assert!(is_process_local_address(&loopback));
+        assert!(is_process_local_address(&docker));
+        assert!(!is_process_local_address(&lan));
     }
 
     #[test]

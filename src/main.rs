@@ -7,7 +7,7 @@ use ieum_chain::{
 };
 use libp2p::{Multiaddr, multiaddr::Protocol};
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fs;
 use std::io::{self, Write};
 use std::net::{IpAddr, Ipv4Addr, TcpListener, UdpSocket};
@@ -16,7 +16,7 @@ use std::time::Duration;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 const DEFAULT_BOOTSTRAP_CONFIG: &str = "config/bootstrap.json";
-const DEFAULT_BOOTSTRAP_PEER: &str = "/dns4/node.ieum.aah.name/udp/7001/quic-v1/p2p/12D3KooWAVRZjnbP8nXp8vD6irYFAXdLJVyczEFWdKLFzKnKDATx";
+const DEFAULT_BOOTSTRAP_PEER: &str = "/dns4/node.ieum.aah.name/udp/7001/quic-v1/p2p/12D3KooWPw75Nmz8311sBxMuDaFfwFmG9JqYzNwbTdP55R9h5j69";
 const SERVER_INSTANCE_PORT: u16 = 49_889;
 const CLIENT_INSTANCE_PORT: u16 = 49_890;
 const SUPPORTED_PROTOCOL_VERSION: u32 = 2;
@@ -344,6 +344,7 @@ async fn main() -> Result<(), String> {
         })
     };
     let mut registrations = BTreeMap::new();
+    let mut connection_failures: HashMap<(Option<libp2p::PeerId>, String), usize> = HashMap::new();
     if let Some(registration) = &local_registration {
         registrations.insert(registration.validator_id.clone(), registration.clone());
     }
@@ -471,6 +472,7 @@ async fn main() -> Result<(), String> {
             event = events.recv() => {
                 match event {
                     Some(NetworkEvent::PeerConnected { peer_id: connected, remote_address, remote_ip, direction, connection_id, current_connections }) => {
+                        connection_failures.clear();
                         rpc.set_peer_count(current_connections)?;
                         log_info!("{}", NetworkEvent::PeerConnected { peer_id: connected, remote_address, remote_ip, direction, connection_id, current_connections });
                         commands.send(NetworkCommand::RequestSync {
@@ -622,6 +624,24 @@ async fn main() -> Result<(), String> {
                             current_connections,
                             cause,
                         });
+                    }
+                    Some(NetworkEvent::OutgoingConnectionFailed { peer_id, error, .. }) => {
+                        let count = connection_failures
+                            .entry((peer_id, error.clone()))
+                            .and_modify(|value| *value += 1)
+                            .or_insert(1);
+                        let peer = peer_id
+                            .map(|value| value.to_string())
+                            .unwrap_or_else(|| "확인 불가".into());
+                        let guidance = if error.contains("Unexpected peer ID") {
+                            " · 주소의 실제 PeerId가 설정과 다릅니다. bootstrap.json과 운영 server.node.key를 확인하세요."
+                        } else {
+                            ""
+                        };
+                        ieum_chain::logger::write_repeated_error(
+                            &format!("[P2P 접속 실패] PeerId: {peer} · 오류: {error}{guidance}"),
+                            *count,
+                        );
                     }
                     Some(event) => log_info!("{event}"),
                     None => {
@@ -970,7 +990,7 @@ mod tests {
     #[test]
     fn bootstrap_config_accepts_address_array() {
         let config: BootstrapConfig = serde_json::from_str(
-            r#"["/dns4/node.ieum.aah.name/udp/7001/quic-v1/p2p/12D3KooWAVRZjnbP8nXp8vD6irYFAXdLJVyczEFWdKLFzKnKDATx"]"#,
+            r#"["/dns4/node.ieum.aah.name/udp/7001/quic-v1/p2p/12D3KooWPw75Nmz8311sBxMuDaFfwFmG9JqYzNwbTdP55R9h5j69"]"#,
         )
         .unwrap();
         match config {
@@ -1010,7 +1030,7 @@ mod tests {
         let peer_id = multiaddr_peer_id(&address).unwrap();
         assert_eq!(
             peer_id.to_string(),
-            "12D3KooWAVRZjnbP8nXp8vD6irYFAXdLJVyczEFWdKLFzKnKDATx"
+            "12D3KooWPw75Nmz8311sBxMuDaFfwFmG9JqYzNwbTdP55R9h5j69"
         );
     }
 }
