@@ -244,6 +244,7 @@ async fn main() -> Result<(), String> {
             &args.validators_config,
             &args.events_config,
             Path::new("config/upgrades.json"),
+            args.allow_insecure_test_keys,
         )?;
     }
     prepare_ports(&mut args, is_client)?;

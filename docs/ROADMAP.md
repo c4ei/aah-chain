@@ -33,6 +33,7 @@
 | v0.17.1 | 쉬운 최초 설치 | 서버별 키·원장 자동 생성, 유실 보호, 초보자 실행 문서 |
 | v0.18.0 | 보안 통신 기반 | WebRTC 연결 협상용 암호화 envelope와 로컬 RPC |
 | v0.18.1 | 직접 신호 전달 | 전체 통신 topic을 제거하고 libp2p request-response로 대상 PeerId에 직접 전달 |
+| v0.19.0 | 검증자 자동 선발 코어 | 1% 지분·국가별 보유 상위 50위·관리자 승인, 위임·가동률·QUIC 확인 정책 |
 
 ## 현재 제한
 
@@ -41,6 +42,8 @@
 - snapshot chunk 저장·재개 코어는 구현됐지만 P2P 병렬 chunk 요청과 peer별 재시도는 아직 없습니다.
 - 외부 signer 경계는 구현됐지만 제품별 PKCS#11/Vault/KMS adapter와 HA failover는 별도입니다.
 - IP 단위 연결 속도 제한, subnet diversity, ASN 다양성은 아직 없습니다.
+- `node.ieum.aah.name` 후보 등록 request-response와 epoch 자동 반영은 후속 네트워크
+  결합이 필요합니다. 현재 버전은 결정론적 자격 계산 코어와 개발망 자동 구성을 제공합니다.
 - embedded key-value backend는 작은 테스트넷용이며 메인넷 전 RocksDB/SQLite WAL급 backend가 필요합니다.
 
 ## 다음 단계
@@ -83,6 +86,8 @@
 ### Step 8: PoS 운영
 
 - 스테이킹·언스테이킹·위임
+- [완료 0.19.0] 검증자 자격과 국가별 IEUM 보유 상위 50위 결정론적 계산
+- `node.ieum.aah.name` 접속 후보의 소유권 서명·QUIC challenge 자동 등록
 - validator set 변경은 epoch 경계에서만 반영
 - double-sign 및 장시간 offline slashing
 - 보상, 수수료 분배, 최소 stake

@@ -27,6 +27,8 @@ start_node() {
     --rpc-port "$rpc_port"
     --rpc-data-dir "$test_root/node-$index"
     --node-key "$test_root/node-$index.key"
+    --validator-key "$test_root/validator-$index.key"
+    --validators-config "$test_root/validators.json"
     --propose-timeout-ms 1500
     --prevote-timeout-ms 1500
     --precommit-timeout-ms 1500

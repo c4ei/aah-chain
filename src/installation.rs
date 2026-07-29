@@ -15,6 +15,7 @@ pub fn prepare_server_files(
     validators_config: &Path,
     events_config: &Path,
     upgrades_config: &Path,
+    allow_insecure_test_keys: bool,
 ) -> Result<(), String> {
     let marker = marker_path(ledger_dir);
     if marker.exists() {
@@ -27,7 +28,7 @@ pub fn prepare_server_files(
                 ledger_dir.display()
             ));
         }
-        return require_shared_config(validators_config);
+        return prepare_validators_config(validators_config, allow_insecure_test_keys);
     }
 
     let ledger_has_data = ledger_dir
@@ -84,7 +85,26 @@ pub fn prepare_server_files(
     );
     println!("위 공개키만 관리자에게 전달하세요. validator.key 내용은 절대 공유하지 마세요.");
 
-    require_shared_config(validators_config)
+    prepare_validators_config(validators_config, allow_insecure_test_keys)
+}
+
+fn prepare_validators_config(path: &Path, allow_insecure_test_keys: bool) -> Result<(), String> {
+    if path.exists() {
+        return Ok(());
+    }
+    if allow_insecure_test_keys {
+        let public_keys: Vec<_> = (1..=4)
+            .map(|index| ieum_chain::Wallet::from_seed(testnet_validator_seed(index)).address())
+            .collect();
+        ieum_chain::validator_key::create_validators_config(path, &public_keys, 100)?;
+        println!("[개발망 자동 생성] {}", path.display());
+        return Ok(());
+    }
+    require_shared_config(path)
+}
+
+fn testnet_validator_seed(index: u8) -> [u8; 32] {
+    [index; 32]
 }
 
 fn marker_path(ledger_dir: &Path) -> PathBuf {
@@ -181,6 +201,7 @@ mod tests {
             &root.join("config/validators.json"),
             &root.join("config/events.json"),
             &root.join("config/upgrades.json"),
+            false,
         );
         assert!(result.unwrap_err().contains("공통 검증자 설정"));
         assert!(root.join("config/validator.key").exists());
@@ -206,10 +227,29 @@ mod tests {
             &root.join("config/validators.json"),
             &root.join("config/events.json"),
             &root.join("config/upgrades.json"),
+            false,
         )
         .unwrap_err();
         assert!(error.contains("자동 생성하면 다른 노드"));
         assert!(!key.exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn insecure_testnet_creates_shared_validator_config_automatically() {
+        let root = temp_root("testnet-auto-config");
+        prepare_server_files(
+            &root.join("config/validator.key"),
+            &root.join("data/server.node.key"),
+            &root.join("data/ledger"),
+            &root.join("config/validators.json"),
+            &root.join("config/events.json"),
+            &root.join("config/upgrades.json"),
+            true,
+        )
+        .unwrap();
+        let config = fs::read_to_string(root.join("config/validators.json")).unwrap();
+        assert_eq!(config.matches("\"id\"").count(), 4);
         fs::remove_dir_all(root).unwrap();
     }
 }

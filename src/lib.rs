@@ -33,6 +33,7 @@ pub mod storage;
 pub mod updater;
 pub mod upgrade;
 pub mod validator_key;
+pub mod validator_policy;
 pub mod wallet;
 
 pub use account_security::{AccountKey, AccountPolicy, Authorization, Permission, RecoveryRequest};
