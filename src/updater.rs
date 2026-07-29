@@ -25,6 +25,12 @@ pub struct UpdateManifest {
     pub signature: String,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum UpdateResult {
+    Current,
+    Installed,
+}
+
 #[derive(Serialize)]
 struct UnsignedManifest<'a> {
     version: &'a str,
@@ -94,6 +100,21 @@ pub fn check_and_prompt(
     install_current_platform(&manifest)
 }
 
+/// systemd의 ExecStartPre처럼 외부 서비스 관리자가 호출하는 비대화형 업데이트입니다.
+/// 실행 중인 서버의 키·설정·원장은 건드리지 않고 현재 실행 파일만 교체합니다.
+pub fn install_non_interactive(
+    manifest_url: &str,
+    release_public_key: &str,
+) -> Result<UpdateResult, String> {
+    let manifest = fetch_manifest(manifest_url)?;
+    manifest.verify(release_public_key)?;
+    if !is_newer(env!("CARGO_PKG_VERSION"), &manifest.version)? {
+        return Ok(UpdateResult::Current);
+    }
+    install_current_platform(&manifest)?;
+    Ok(UpdateResult::Installed)
+}
+
 fn fetch_manifest(url: &str) -> Result<UpdateManifest, String> {
     let bytes = download_https(url)?;
     serde_json::from_slice(&bytes).map_err(|error| format!("업데이트 manifest JSON 오류: {error}"))
@@ -110,8 +131,24 @@ fn install_current_platform(manifest: &UpdateManifest) -> Result<(), String> {
     if !actual.eq_ignore_ascii_case(artifact.sha256.trim_start_matches("0x")) {
         return Err("업데이트 파일 SHA-256이 manifest와 다릅니다.".into());
     }
+    validate_executable_bytes(&bytes)?;
     let current = std::env::current_exe().map_err(|error| error.to_string())?;
     stage_or_replace(&current, &bytes)
+}
+
+fn validate_executable_bytes(bytes: &[u8]) -> Result<(), String> {
+    #[cfg(target_os = "linux")]
+    if !bytes.starts_with(b"\x7fELF") {
+        return Err(
+            "Linux 업데이트 파일이 ELF 실행파일이 아닙니다. tar.xz URL이 아닌 무압축 바이너리 raw URL을 사용하세요."
+                .into(),
+        );
+    }
+    #[cfg(target_os = "windows")]
+    if !bytes.starts_with(b"MZ") {
+        return Err("Windows 업데이트 파일이 PE 실행파일이 아닙니다.".into());
+    }
+    Ok(())
 }
 
 #[cfg(unix)]
@@ -212,12 +249,20 @@ fn download_https(url: &str) -> Result<Vec<u8>, String> {
 
 #[cfg(test)]
 mod tests {
-    use super::is_newer;
+    use super::{is_newer, validate_executable_bytes};
 
     #[test]
     fn semantic_numeric_version_comparison() {
         assert!(is_newer("0.16.2", "0.17.0").unwrap());
         assert!(!is_newer("0.17.0", "0.17.0").unwrap());
         assert!(!is_newer("0.17.1", "0.17.0").unwrap());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn archive_cannot_replace_linux_executable() {
+        let error = validate_executable_bytes(b"\xfd7zXZ\0").unwrap_err();
+        assert!(error.contains("tar.xz"));
+        assert!(validate_executable_bytes(b"\x7fELFrest").is_ok());
     }
 }

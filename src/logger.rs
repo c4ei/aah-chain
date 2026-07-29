@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, BufReader, Write};
 use std::path::{Path, PathBuf};
@@ -8,6 +9,7 @@ const MAX_COMPRESSED_LOGS: usize = 5;
 
 static SERVER_LOGGER: OnceLock<Mutex<RotatingLogger>> = OnceLock::new();
 static REPEATED_LINE_OPEN: OnceLock<Mutex<bool>> = OnceLock::new();
+static REPEATED_ERRORS: OnceLock<Mutex<HashMap<String, usize>>> = OnceLock::new();
 
 pub fn init_server_log(path: impl AsRef<Path>) -> Result<(), String> {
     let path = path.as_ref().to_path_buf();
@@ -37,20 +39,41 @@ pub fn write_line(message: &str, is_error: bool) {
 }
 
 /// 같은 네트워크 오류가 반복될 때 터미널 한 줄의 횟수만 갱신합니다.
-/// 회전 로그에는 첫 발생만 남겨 장애 원인은 보존하되 로그 폭증은 막습니다.
-pub fn write_repeated_error(message: &str, count: usize) {
+/// 회전 로그에는 최초와 자릿수 요약만 남겨 장애 원인은 보존하되 로그 폭증은 막습니다.
+pub fn write_repeated_error(message: &str) {
+    let count = {
+        let counters = REPEATED_ERRORS.get_or_init(|| Mutex::new(HashMap::new()));
+        let Ok(mut counters) = counters.lock() else {
+            write_line(message, true);
+            return;
+        };
+        let count = counters.entry(message.to_owned()).or_insert(0);
+        *count = count.saturating_add(1);
+        *count
+    };
     let state = REPEATED_LINE_OPEN.get_or_init(|| Mutex::new(false));
     if let Ok(mut open) = state.lock() {
         eprint!("\r\x1b[2K{message} ({count}회)");
         let _ = io::stderr().flush();
-        if count == 1
+        // 파일에는 최초와 10·100·1000회 같은 요약 시점만 남깁니다.
+        // 터미널은 매번 같은 줄의 횟수만 갱신합니다.
+        if (count == 1 || is_decimal_checkpoint(count))
             && let Some(logger) = SERVER_LOGGER.get()
             && let Ok(mut logger) = logger.lock()
         {
-            let _ = logger.append(&format!("{message} (1회, 이후 동일 오류 집계)"));
+            let suffix = if count == 1 {
+                "1회, 이후 동일 오류 집계".to_string()
+            } else {
+                format!("{count}회 누적")
+            };
+            let _ = logger.append(&format!("{message} ({suffix})"));
         }
         *open = true;
     }
+}
+
+fn is_decimal_checkpoint(count: usize) -> bool {
+    count >= 10 && count.to_string().bytes().skip(1).all(|digit| digit == b'0')
 }
 
 fn finish_repeated_line() {
@@ -128,4 +151,17 @@ macro_rules! log_error {
     ($($argument:tt)*) => {
         $crate::logger::write_line(&format!($($argument)*), true)
     };
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_decimal_checkpoint;
+
+    #[test]
+    fn repeated_log_checkpoints_are_sparse() {
+        assert!(!is_decimal_checkpoint(2));
+        assert!(is_decimal_checkpoint(10));
+        assert!(is_decimal_checkpoint(100));
+        assert!(!is_decimal_checkpoint(101));
+    }
 }

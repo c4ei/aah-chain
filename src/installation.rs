@@ -29,6 +29,7 @@ pub fn prepare_server_files(
             ));
         }
         let validator_public_key = ieum_chain::validator_key::public_key_from_file(validator_key)?;
+        verify_marker_identity(&marker, &validator_public_key, node_key)?;
         return prepare_validators_config(
             validators_config,
             &validator_public_key,
@@ -95,6 +96,39 @@ pub fn prepare_server_files(
         &validator_public_key,
         allow_insecure_test_keys,
     )
+}
+
+fn verify_marker_identity(
+    marker: &Path,
+    validator_public_key: &str,
+    node_key: &Path,
+) -> Result<(), String> {
+    let contents = fs::read_to_string(marker)
+        .map_err(|error| format!("초기화 표시 파일 읽기 실패({}): {error}", marker.display()))?;
+    let expected_validator = marker_value(&contents, "validator_public_key")
+        .ok_or("초기화 표시 파일에 validator_public_key가 없습니다.")?;
+    let expected_peer =
+        marker_value(&contents, "peer_id").ok_or("초기화 표시 파일에 peer_id가 없습니다.")?;
+    let identity = ieum_chain::node_key::load_or_create_node_key(node_key)?;
+    let actual_peer = libp2p::PeerId::from(identity.public()).to_string();
+    if expected_validator != validator_public_key {
+        return Err(
+            "validator.key가 최초 초기화 때의 키와 다릅니다. 자동 생성하지 않고 실행을 중단합니다."
+                .into(),
+        );
+    }
+    if expected_peer != actual_peer {
+        return Err(format!(
+            "server.node.key가 최초 초기화 때의 노드 키와 다릅니다(기록: {expected_peer}, 현재: {actual_peer}). 백업 키를 복구해 주세요."
+        ));
+    }
+    Ok(())
+}
+
+fn marker_value<'a>(contents: &'a str, name: &str) -> Option<&'a str> {
+    contents
+        .lines()
+        .find_map(|line| line.strip_prefix(&format!("{name}=")))
 }
 
 fn prepare_validators_config(
@@ -244,6 +278,35 @@ mod tests {
         .unwrap_err();
         assert!(error.contains("자동 생성하면 다른 노드"));
         assert!(!key.exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn initialized_node_rejects_replaced_node_key() {
+        let root = temp_root("replaced-node-key");
+        prepare_server_files(
+            &root.join("config/validator.key"),
+            &root.join("data/server.node.key"),
+            &root.join("data/ledger"),
+            &root.join("config/validators.json"),
+            &root.join("config/events.json"),
+            &root.join("config/upgrades.json"),
+            false,
+        )
+        .unwrap();
+        fs::remove_file(root.join("data/server.node.key")).unwrap();
+        ieum_chain::node_key::load_or_create_node_key(root.join("data/server.node.key")).unwrap();
+        let error = prepare_server_files(
+            &root.join("config/validator.key"),
+            &root.join("data/server.node.key"),
+            &root.join("data/ledger"),
+            &root.join("config/validators.json"),
+            &root.join("config/events.json"),
+            &root.join("config/upgrades.json"),
+            false,
+        )
+        .unwrap_err();
+        assert!(error.contains("최초 초기화"));
         fs::remove_dir_all(root).unwrap();
     }
 

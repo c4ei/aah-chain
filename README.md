@@ -1,4 +1,4 @@
-# IEUM Chain v0.19.2 쉬운 실행 안내
+# IEUM Chain v0.19.4 쉬운 실행 안내
 
 IEUM Chain은 Ubuntu와 Windows에서 실행할 수 있는 경량 블록체인 노드입니다.
 첫 노드는 제네시스 상태에서 단독으로 시작할 수 있습니다. 장애 허용 BFT 검증은

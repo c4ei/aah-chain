@@ -7,7 +7,7 @@ use ieum_chain::{
 };
 use libp2p::{Multiaddr, multiaddr::Protocol};
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
 use std::fs;
 use std::io::{self, Write};
 use std::net::{IpAddr, Ipv4Addr, TcpListener, UdpSocket};
@@ -16,7 +16,7 @@ use std::time::Duration;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 const DEFAULT_BOOTSTRAP_CONFIG: &str = "config/bootstrap.json";
-const DEFAULT_BOOTSTRAP_PEER: &str = "/dns4/node.ieum.aah.name/udp/7001/quic-v1/p2p/12D3KooWPw75Nmz8311sBxMuDaFfwFmG9JqYzNwbTdP55R9h5j69";
+const DEFAULT_BOOTSTRAP_PEER: &str = "/dns4/node.ieum.aah.name/udp/7001/quic-v1/p2p/12D3KooWAVRZjnbP8nXp8vD6irYFAXdLJVyczEFWdKLFzKnKDATx";
 const SERVER_INSTANCE_PORT: u16 = 49_889;
 const CLIENT_INSTANCE_PORT: u16 = 49_890;
 const SUPPORTED_PROTOCOL_VERSION: u32 = 2;
@@ -36,6 +36,16 @@ enum Command {
     Server(NodeArgs),
     /// 일반 PC 노드로 실행하고 운영 서버에 연결합니다.
     Client(ClientArgs),
+    /// 서명 manifest를 검사하고 실행파일만 비대화형으로 교체합니다.
+    /// 서버는 systemd가 중지한 상태에서 호출해야 합니다.
+    Update {
+        /// 서명된 업데이트 manifest URL
+        #[arg(long)]
+        manifest_url: String,
+        /// manifest를 검증할 IEUM 릴리스 Ed25519 공개키(32바이트 hex)
+        #[arg(long)]
+        release_public_key: String,
+    },
     /// 운영 검증자 Ed25519 키와 공개키 설정을 관리합니다.
     ValidatorKey {
         #[command(subcommand)]
@@ -183,6 +193,24 @@ async fn main() -> Result<(), String> {
     let args = Args::parse();
     let (mode, mut args, bootstrap_peers, is_client) = match args.command {
         Some(Command::ValidatorKey { command }) => return run_validator_key_command(command),
+        Some(Command::Update {
+            manifest_url,
+            release_public_key,
+        }) => {
+            return match ieum_chain::updater::install_non_interactive(
+                &manifest_url,
+                &release_public_key,
+            )? {
+                ieum_chain::updater::UpdateResult::Current => {
+                    println!("현재 버전이 최신입니다.");
+                    Ok(())
+                }
+                ieum_chain::updater::UpdateResult::Installed => {
+                    println!("서명된 업데이트를 설치했습니다.");
+                    Ok(())
+                }
+            };
+        }
         Some(Command::Server(mut args)) => {
             if args.node_key == Path::new("data/node.key") {
                 args.node_key = PathBuf::from("data/server.node.key");
@@ -344,7 +372,6 @@ async fn main() -> Result<(), String> {
         })
     };
     let mut registrations = BTreeMap::new();
-    let mut connection_failures: HashMap<(Option<libp2p::PeerId>, String), usize> = HashMap::new();
     if let Some(registration) = &local_registration {
         registrations.insert(registration.validator_id.clone(), registration.clone());
     }
@@ -472,7 +499,6 @@ async fn main() -> Result<(), String> {
             event = events.recv() => {
                 match event {
                     Some(NetworkEvent::PeerConnected { peer_id: connected, remote_address, remote_ip, direction, connection_id, current_connections }) => {
-                        connection_failures.clear();
                         rpc.set_peer_count(current_connections)?;
                         log_info!("{}", NetworkEvent::PeerConnected { peer_id: connected, remote_address, remote_ip, direction, connection_id, current_connections });
                         commands.send(NetworkCommand::RequestSync {
@@ -626,10 +652,6 @@ async fn main() -> Result<(), String> {
                         });
                     }
                     Some(NetworkEvent::OutgoingConnectionFailed { peer_id, error, .. }) => {
-                        let count = connection_failures
-                            .entry((peer_id, error.clone()))
-                            .and_modify(|value| *value += 1)
-                            .or_insert(1);
                         let peer = peer_id
                             .map(|value| value.to_string())
                             .unwrap_or_else(|| "확인 불가".into());
@@ -640,7 +662,6 @@ async fn main() -> Result<(), String> {
                         };
                         ieum_chain::logger::write_repeated_error(
                             &format!("[P2P 접속 실패] PeerId: {peer} · 오류: {error}{guidance}"),
-                            *count,
                         );
                     }
                     Some(event) => log_info!("{event}"),
@@ -989,10 +1010,8 @@ mod tests {
 
     #[test]
     fn bootstrap_config_accepts_address_array() {
-        let config: BootstrapConfig = serde_json::from_str(
-            r#"["/dns4/node.ieum.aah.name/udp/7001/quic-v1/p2p/12D3KooWPw75Nmz8311sBxMuDaFfwFmG9JqYzNwbTdP55R9h5j69"]"#,
-        )
-        .unwrap();
+        let json = format!(r#"["{DEFAULT_BOOTSTRAP_PEER}"]"#);
+        let config: BootstrapConfig = serde_json::from_str(&json).unwrap();
         match config {
             BootstrapConfig::Addresses(peers) => {
                 assert_eq!(peers.len(), 1);
@@ -1030,7 +1049,7 @@ mod tests {
         let peer_id = multiaddr_peer_id(&address).unwrap();
         assert_eq!(
             peer_id.to_string(),
-            "12D3KooWPw75Nmz8311sBxMuDaFfwFmG9JqYzNwbTdP55R9h5j69"
+            DEFAULT_BOOTSTRAP_PEER.rsplit('/').next().unwrap()
         );
     }
 }

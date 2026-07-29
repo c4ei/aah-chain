@@ -607,7 +607,7 @@ fn publish_to_topic(
         return;
     };
     if let Err(error) = swarm.behaviour_mut().gossipsub.publish(topic, bytes) {
-        crate::log_error!("P2P 메시지 전파 실패: {error}");
+        crate::logger::write_repeated_error(&format!("P2P 메시지 전파 실패: {error}"));
     }
 }
 
