@@ -357,7 +357,7 @@ async fn main() -> Result<(), String> {
             _ = consensus_tick.tick() => {
                 for envelope in rpc.drain_outbound_communication()? {
                     commands
-                        .send(NetworkCommand::PublishCommunication(envelope))
+                        .send(NetworkCommand::SendCommunication(envelope))
                         .await
                         .map_err(|error| error.to_string())?;
                 }

@@ -35,6 +35,12 @@ pub struct CommunicationEnvelope {
     pub encrypted_payload_hex: String,
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct CommunicationAck {
+    pub message_id: String,
+    pub accepted: bool,
+}
+
 impl CommunicationEnvelope {
     pub fn validate(&self, now: u64) -> Result<(), String> {
         if self.id.len() < 16 || self.id.len() > 128 || !is_safe_id(&self.id) {

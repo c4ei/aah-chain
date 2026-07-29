@@ -1,4 +1,4 @@
-use crate::communication::CommunicationEnvelope;
+use crate::communication::{CommunicationAck, CommunicationEnvelope};
 use crate::consensus::{ConsensusMessage, DoubleVoteEvidence, FinalityCertificate, SignedProposal};
 use crate::model::{Block, Transaction};
 use crate::peer_guard::{PeerDecision, PeerGuard};
@@ -6,10 +6,11 @@ use crate::snapshot_sync::SyncTip;
 use futures::StreamExt;
 use libp2p::core::ConnectedPoint;
 use libp2p::{
-    Multiaddr, PeerId, SwarmBuilder, gossipsub, identify,
+    Multiaddr, PeerId, StreamProtocol, SwarmBuilder, gossipsub, identify,
     identity::Keypair,
     kad, mdns,
     multiaddr::Protocol,
+    request_response,
     swarm::{ConnectionId, NetworkBehaviour, SwarmEvent},
 };
 use serde::{Deserialize, Serialize};
@@ -23,7 +24,7 @@ use tokio::sync::mpsc;
 pub const BLOCK_TOPIC: &str = "ieum-chain/blocks/1";
 pub const CONSENSUS_TOPIC: &str = "ieum-chain/consensus/1";
 pub const SYNC_TOPIC: &str = "ieum-chain/sync/2";
-pub const COMMUNICATION_TOPIC: &str = "ieum-chain/communication/1";
+pub const COMMUNICATION_PROTOCOL: &str = "/ieum-chain/communication/1";
 
 /// P2P 실행 시 바꿀 수 있는 네트워크·방어 설정입니다.
 #[derive(Clone, Debug)]
@@ -67,8 +68,6 @@ pub enum WireMessage {
         tip: SyncTip,
         certificates: Vec<FinalityCertificate>,
     },
-    /// WebRTC/채팅의 짧은 수명 종단간 암호화 연결 협상 메시지입니다.
-    Communication(CommunicationEnvelope),
 }
 
 /// 노드 코어가 비동기 P2P 작업에 보내는 명령입니다.
@@ -88,7 +87,7 @@ pub enum NetworkCommand {
         certificates: Vec<FinalityCertificate>,
     },
     Dial(Multiaddr),
-    PublishCommunication(CommunicationEnvelope),
+    SendCommunication(CommunicationEnvelope),
     Shutdown,
 }
 
@@ -264,6 +263,7 @@ struct IeumBehaviour {
     mdns: mdns::tokio::Behaviour,
     kademlia: kad::Behaviour<kad::store::MemoryStore>,
     identify: identify::Behaviour,
+    communication: request_response::cbor::Behaviour<CommunicationEnvelope, CommunicationAck>,
 }
 
 #[derive(Debug)]
@@ -272,6 +272,7 @@ enum IeumBehaviourEvent {
     Mdns(mdns::Event),
     Kademlia(kad::Event),
     Identify(Box<identify::Event>),
+    Communication(request_response::Event<CommunicationEnvelope, CommunicationAck>),
 }
 
 impl From<gossipsub::Event> for IeumBehaviourEvent {
@@ -292,6 +293,11 @@ impl From<kad::Event> for IeumBehaviourEvent {
 impl From<identify::Event> for IeumBehaviourEvent {
     fn from(value: identify::Event) -> Self {
         Self::Identify(Box::new(value))
+    }
+}
+impl From<request_response::Event<CommunicationEnvelope, CommunicationAck>> for IeumBehaviourEvent {
+    fn from(value: request_response::Event<CommunicationEnvelope, CommunicationAck>) -> Self {
+        Self::Communication(value)
     }
 }
 
@@ -340,8 +346,6 @@ impl P2pNode {
                     gossipsub.subscribe(&gossipsub::IdentTopic::new(BLOCK_TOPIC))?;
                     gossipsub.subscribe(&gossipsub::IdentTopic::new(CONSENSUS_TOPIC))?;
                     gossipsub.subscribe(&gossipsub::IdentTopic::new(SYNC_TOPIC))?;
-                    gossipsub.subscribe(&gossipsub::IdentTopic::new(COMMUNICATION_TOPIC))?;
-
                     let mdns = mdns::tokio::Behaviour::new(mdns::Config::default(), peer_id)?;
                     let store = kad::store::MemoryStore::new(peer_id);
                     let mut kademlia = kad::Behaviour::new(peer_id, store);
@@ -350,11 +354,20 @@ impl P2pNode {
                         "/ieum-chain/1.1.0".into(),
                         key.public(),
                     ));
+                    let communication = request_response::cbor::Behaviour::new(
+                        [(
+                            StreamProtocol::new(COMMUNICATION_PROTOCOL),
+                            request_response::ProtocolSupport::Full,
+                        )],
+                        request_response::Config::default()
+                            .with_request_timeout(Duration::from_secs(10)),
+                    );
                     Ok(IeumBehaviour {
                         gossipsub,
                         mdns,
                         kademlia,
                         identify,
+                        communication,
                     })
                 },
             )
@@ -429,13 +442,19 @@ impl P2pNode {
                                     crate::log_error!("{error}");
                                 }
                             }
-                            Some(NetworkCommand::PublishCommunication(mut envelope)) => {
+                            Some(NetworkCommand::SendCommunication(mut envelope)) => {
                                 envelope.sender_peer_id = local_peer_id.to_string();
-                                publish(
-                                    &mut swarm,
-                                    COMMUNICATION_TOPIC,
-                                    &WireMessage::Communication(envelope),
-                                );
+                                match envelope.target_peer_id.parse::<PeerId>() {
+                                    Ok(target) => {
+                                        swarm
+                                            .behaviour_mut()
+                                            .communication
+                                            .send_request(&target, envelope);
+                                    }
+                                    Err(error) => crate::log_error!(
+                                        "통신 대상 PeerId 형식 오류: {error}"
+                                    ),
+                                }
                             }
                             Some(NetworkCommand::Shutdown) | None => break,
                         }
@@ -541,15 +560,19 @@ async fn resolve_dns4_addresses(address: &Multiaddr) -> Result<Vec<Multiaddr>, S
 }
 
 fn publish(swarm: &mut libp2p::Swarm<IeumBehaviour>, topic: &str, message: &WireMessage) {
+    publish_to_topic(swarm, gossipsub::IdentTopic::new(topic), message);
+}
+
+fn publish_to_topic(
+    swarm: &mut libp2p::Swarm<IeumBehaviour>,
+    topic: gossipsub::IdentTopic,
+    message: &WireMessage,
+) {
     let Ok(bytes) = serde_json::to_vec(message) else {
         crate::log_error!("P2P 메시지 직렬화 실패");
         return;
     };
-    if let Err(error) = swarm
-        .behaviour_mut()
-        .gossipsub
-        .publish(gossipsub::IdentTopic::new(topic), bytes)
-    {
+    if let Err(error) = swarm.behaviour_mut().gossipsub.publish(topic, bytes) {
         crate::log_error!("P2P 메시지 전파 실패: {error}");
     }
 }
@@ -590,7 +613,6 @@ async fn handle_swarm_event(
             message,
             ..
         })) => {
-            let authenticated_source = message.source.unwrap_or(propagation_source);
             let peer_key = propagation_source.to_string();
             if guard.check(&peer_key) == PeerDecision::TemporarilyBlocked {
                 return Ok(());
@@ -653,30 +675,66 @@ async fn handle_swarm_event(
                         certificates,
                     }
                 }
-                WireMessage::Communication(envelope) => {
-                    if envelope.target_peer_id != swarm.local_peer_id().to_string() {
-                        return Ok(());
-                    }
-                    if envelope.sender_peer_id != authenticated_source.to_string() {
-                        guard.penalize(&peer_key, 50);
-                        return Err("통신 메시지 발신 PeerId가 실제 연결과 다릅니다.".into());
-                    }
-                    let now = std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .map_err(|error| format!("시스템 시각 오류: {error}"))?
-                        .as_secs();
-                    envelope.validate(now)?;
-                    NetworkEvent::CommunicationReceived {
-                        source: authenticated_source,
-                        envelope,
-                    }
-                }
             };
             event_tx
                 .send(network_event)
                 .await
                 .map_err(|e| e.to_string())?;
         }
+        SwarmEvent::Behaviour(IeumBehaviourEvent::Communication(event)) => match event {
+            request_response::Event::Message { peer, message, .. } => match message {
+                request_response::Message::Request {
+                    request, channel, ..
+                } => {
+                    let peer_key = peer.to_string();
+                    if guard.check(&peer_key) == PeerDecision::TemporarilyBlocked {
+                        return Ok(());
+                    }
+                    let accepted =
+                        validate_direct_communication(swarm.local_peer_id(), &peer, &request)
+                            .is_ok();
+                    if accepted {
+                        guard.reward(&peer_key);
+                    } else {
+                        guard.penalize(&peer_key, 50);
+                    }
+                    let ack = CommunicationAck {
+                        message_id: request.id.clone(),
+                        accepted,
+                    };
+                    swarm
+                        .behaviour_mut()
+                        .communication
+                        .send_response(channel, ack)
+                        .map_err(|_| "통신 신호 응답 전송에 실패했습니다.".to_string())?;
+                    if accepted {
+                        event_tx
+                            .send(NetworkEvent::CommunicationReceived {
+                                source: peer,
+                                envelope: request,
+                            })
+                            .await
+                            .map_err(|error| error.to_string())?;
+                    }
+                }
+                request_response::Message::Response { response, .. } => {
+                    if !response.accepted {
+                        crate::log_error!(
+                            "대상 피어가 통신 신호를 거부했습니다: {}",
+                            response.message_id
+                        );
+                    }
+                }
+            },
+            request_response::Event::OutboundFailure { peer, error, .. } => {
+                crate::log_error!("통신 신호 직접 전송 실패: PeerId {peer}, 오류: {error}");
+            }
+            request_response::Event::InboundFailure { peer, error, .. } => {
+                guard.penalize(&peer.to_string(), 25);
+                crate::log_error!("통신 신호 직접 수신 실패: PeerId {peer}, 오류: {error}");
+            }
+            request_response::Event::ResponseSent { .. } => {}
+        },
         SwarmEvent::ConnectionEstablished {
             peer_id,
             connection_id,
@@ -746,6 +804,24 @@ async fn handle_swarm_event(
     Ok(())
 }
 
+fn validate_direct_communication(
+    local_peer_id: &PeerId,
+    source: &PeerId,
+    envelope: &CommunicationEnvelope,
+) -> Result<(), String> {
+    if envelope.target_peer_id != local_peer_id.to_string() {
+        return Err("통신 메시지 대상 PeerId가 현재 노드와 다릅니다.".into());
+    }
+    if envelope.sender_peer_id != source.to_string() {
+        return Err("통신 메시지 발신 PeerId가 실제 연결과 다릅니다.".into());
+    }
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|error| format!("시스템 시각 오류: {error}"))?
+        .as_secs();
+    envelope.validate(now)
+}
+
 fn connection_direction(endpoint: &ConnectedPoint) -> &'static str {
     match endpoint {
         ConnectedPoint::Dialer { .. } => "발신",
@@ -778,6 +854,7 @@ fn format_duration(duration: Duration) -> String {
 #[cfg(test)]
 mod connection_log_tests {
     use super::*;
+    use crate::CommunicationKind;
 
     #[test]
     fn extracts_ipv4_from_multiaddr() {
@@ -800,5 +877,30 @@ mod connection_log_tests {
             resolve_dns4_addresses(&address).await.unwrap(),
             vec![address]
         );
+    }
+
+    #[test]
+    fn direct_communication_rejects_spoofed_sender_and_wrong_target() {
+        let source = PeerId::random();
+        let target = PeerId::random();
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let mut envelope = CommunicationEnvelope {
+            id: "call_0123456789abcdef".into(),
+            sender_peer_id: source.to_string(),
+            target_peer_id: target.to_string(),
+            kind: CommunicationKind::CallInvite,
+            created_at: now,
+            expires_at: now + 60,
+            encrypted_payload_hex: "aabbcc".into(),
+        };
+        assert!(validate_direct_communication(&target, &source, &envelope).is_ok());
+
+        envelope.sender_peer_id = PeerId::random().to_string();
+        assert!(validate_direct_communication(&target, &source, &envelope).is_err());
+        envelope.sender_peer_id = source.to_string();
+        assert!(validate_direct_communication(&PeerId::random(), &source, &envelope).is_err());
     }
 }

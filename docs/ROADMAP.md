@@ -31,6 +31,8 @@
 | v0.16.2 | 운영 키 관리 | validator-key generate/public 및 운영 validators.json 생성 |
 | v0.17.0 | 업데이트·예약 이벤트 | 서명 업데이트 확인, 시간 기반 체크포인트, 정확히 한 번 실행 |
 | v0.17.1 | 쉬운 최초 설치 | 서버별 키·원장 자동 생성, 유실 보호, 초보자 실행 문서 |
+| v0.18.0 | 보안 통신 기반 | WebRTC 연결 협상용 암호화 envelope와 로컬 RPC |
+| v0.18.1 | 직접 신호 전달 | 전체 통신 topic을 제거하고 libp2p request-response로 대상 PeerId에 직접 전달 |
 
 ## 현재 제한
 
