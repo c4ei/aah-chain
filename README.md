@@ -1,5 +1,36 @@
 # IEUM Chain v0.19.6 쉬운 실행 안내
 
+## Ubuntu 신규 노드 배포본 자동 생성
+
+릴리스 빌드 후 설치 가능한 노드 압축을 한 번에 만듭니다.
+
+```bash
+scripts/make-node-package.sh 0.19.6
+```
+
+위 명령은 포맷·Clippy·전체 테스트·릴리스 빌드까지 통과한 경우에만 압축을
+생성합니다.
+
+대상 서버에 직접 복사한 경우:
+
+```bash
+tar -xJf ieum-chain_node_ubuntu_x86_64_v0.19.6.tar.xz
+cd ieum-chain-node-v0.19.6
+sudo ./install.sh
+```
+
+SSH 키와 sudo 권한이 준비된 서버에는 자동 업로드·설치할 수 있습니다.
+
+```bash
+scripts/deploy-node-package.sh \
+  download/ieum-chain_node_ubuntu_x86_64_v0.19.6.tar.xz \
+  dev@192.168.1.148
+```
+
+설치기는 `/opt/ieum-chain`에 systemd 서비스를 등록해 부팅 시 자동 실행합니다.
+기존 `config/validator.key`, `data/server.node.key`, 원장과 로그는 보존하며,
+배포 압축에는 개인키·원장·백업을 포함하지 않습니다.
+
 IEUM Chain은 Ubuntu와 Windows에서 실행할 수 있는 경량 블록체인 노드입니다.
 첫 노드는 제네시스 상태에서 단독으로 시작할 수 있습니다. 장애 허용 BFT 검증은
 **Ubuntu VM 검증자 3대 + Windows VM 검증자 1대**처럼 4명 이상일 때 활성화합니다.

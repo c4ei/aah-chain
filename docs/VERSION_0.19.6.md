@@ -1,5 +1,19 @@
 # IEUM Chain v0.19.6
 
+## Ubuntu 노드 자동 배포
+scripts/make-node-package.sh 0.19.6
+
+- `scripts/make-node-package.sh`가 실행파일, 공개 설정, 설치기와 systemd 서비스
+  템플릿을 하나의 `tar.xz`로 생성합니다.
+- `scripts/install-node-package.sh`는 `/opt/ieum-chain`에 설치하고 부팅 시 자동
+  시작되는 `ieum-chain.service`를 등록합니다.
+- 재설치 시 서버 고유 `validator.key`, `server.node.key`, 원장과 로그는
+  보존합니다.
+- `scripts/deploy-node-package.sh`는 SSH로 여러 서버에 순서대로 업로드하고
+  SHA-256 확인 후 설치·실행합니다.
+- 공개 부트스트랩 주소의 PeerId를 `192.168.1.148` 노드의 영구 PeerId
+  `12D3KooWCngLfRL315jgBHezczSQtgsqjcVqvHMbhmUibkRT7Veb`로 갱신했습니다.
+
 ## 요청
 
 - 완전한 신규 노드를 명시적으로 초기화하는 명령을 추가합니다.
