@@ -509,7 +509,11 @@ async fn main() -> Result<(), String> {
                                 .await.map_err(|e| e.to_string())?;
                         }
                     }
-                    Some(NetworkEvent::ValidatorRegistrationReceived { registration, .. }) if !is_client => {
+                    Some(NetworkEvent::ValidatorRegistrationReceived { source, registration }) if !is_client => {
+                        ieum_chain::logger::write_repeated_info(&format!(
+                            "[검증자 등록 수신] PeerId: {source}, 검증자: {}",
+                            registration.validator_id
+                        ));
                         if let Err(error) = verify_validator_registration(&registration) {
                             log_error!("[검증자 자동 등록 거부] {error}");
                             continue;

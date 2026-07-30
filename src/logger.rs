@@ -9,7 +9,7 @@ const MAX_COMPRESSED_LOGS: usize = 5;
 
 static SERVER_LOGGER: OnceLock<Mutex<RotatingLogger>> = OnceLock::new();
 static REPEATED_LINE_OPEN: OnceLock<Mutex<bool>> = OnceLock::new();
-static REPEATED_ERRORS: OnceLock<Mutex<HashMap<String, usize>>> = OnceLock::new();
+static REPEATED_MESSAGES: OnceLock<Mutex<HashMap<String, usize>>> = OnceLock::new();
 
 pub fn init_server_log(path: impl AsRef<Path>) -> Result<(), String> {
     let path = path.as_ref().to_path_buf();
@@ -41,10 +41,19 @@ pub fn write_line(message: &str, is_error: bool) {
 /// 같은 네트워크 오류가 반복될 때 터미널 한 줄의 횟수만 갱신합니다.
 /// 회전 로그에는 최초와 자릿수 요약만 남겨 장애 원인은 보존하되 로그 폭증은 막습니다.
 pub fn write_repeated_error(message: &str) {
+    write_repeated(message, true);
+}
+
+/// 같은 정상 이벤트가 반복될 때도 새 행을 만들지 않고 터미널 한 줄의 횟수만 갱신합니다.
+pub fn write_repeated_info(message: &str) {
+    write_repeated(message, false);
+}
+
+fn write_repeated(message: &str, is_error: bool) {
     let count = {
-        let counters = REPEATED_ERRORS.get_or_init(|| Mutex::new(HashMap::new()));
+        let counters = REPEATED_MESSAGES.get_or_init(|| Mutex::new(HashMap::new()));
         let Ok(mut counters) = counters.lock() else {
-            write_line(message, true);
+            write_line(message, is_error);
             return;
         };
         let count = counters.entry(message.to_owned()).or_insert(0);
@@ -53,8 +62,13 @@ pub fn write_repeated_error(message: &str) {
     };
     let state = REPEATED_LINE_OPEN.get_or_init(|| Mutex::new(false));
     if let Ok(mut open) = state.lock() {
-        eprint!("\r\x1b[2K{message} ({count}회)");
-        let _ = io::stderr().flush();
+        if is_error {
+            eprint!("\r\x1b[2K{message} ({count}회)");
+            let _ = io::stderr().flush();
+        } else {
+            print!("\r\x1b[2K{message} ({count}회)");
+            let _ = io::stdout().flush();
+        }
         // 파일에는 최초와 10·100·1000회 같은 요약 시점만 남깁니다.
         // 터미널은 매번 같은 줄의 횟수만 갱신합니다.
         if (count == 1 || is_decimal_checkpoint(count))

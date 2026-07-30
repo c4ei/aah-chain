@@ -7,7 +7,7 @@ const MARKER_NAME: &str = ".ieum-initialized";
 /// 서버 최초 실행에 필요한 서버별 비밀키와 로컬 원장을 준비합니다.
 ///
 /// 초기화 표시가 생긴 뒤 핵심 파일이 사라진 경우에는 새 신원을 자동 생성하지 않습니다.
-/// 운영자가 백업을 복구하기 전까지 중단해야 다른 검증자로 바뀌는 사고를 막을 수 있습니다.
+/// 키 파일이 유효하게 존재하면 marker보다 실제 키 파일을 신원의 기준으로 사용합니다.
 pub fn prepare_server_files(
     validator_key: &Path,
     node_key: &Path,
@@ -118,11 +118,61 @@ fn verify_marker_identity(
         );
     }
     if expected_peer != actual_peer {
-        return Err(format!(
-            "server.node.key가 최초 초기화 때의 노드 키와 다릅니다(기록: {expected_peer}, 현재: {actual_peer}). 백업 키를 복구해 주세요."
-        ));
+        backup_and_update_marker(marker, validator_public_key, &actual_peer)?;
+        println!(
+            "[노드 키 기준 복구] server.node.key의 현재 PeerId를 사용합니다\
+             (이전 기록: {expected_peer}, 현재: {actual_peer})."
+        );
+        println!(
+            "[초기화 기록 갱신] {} (이전 기록 백업: {})",
+            marker.display(),
+            marker_backup_path(marker).display()
+        );
     }
     Ok(())
+}
+
+fn marker_backup_path(marker: &Path) -> PathBuf {
+    marker.with_file_name(format!(
+        "{}.previous",
+        marker
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or(MARKER_NAME)
+    ))
+}
+
+fn backup_and_update_marker(
+    marker: &Path,
+    validator_public_key: &str,
+    peer_id: &str,
+) -> Result<(), String> {
+    let backup = marker_backup_path(marker);
+    if !backup.exists() {
+        fs::copy(marker, &backup).map_err(|error| {
+            format!(
+                "기존 초기화 표시 백업 실패({} -> {}): {error}",
+                marker.display(),
+                backup.display()
+            )
+        })?;
+    }
+    let mut options = OpenOptions::new();
+    options.write(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options
+        .open(marker)
+        .map_err(|error| format!("초기화 표시 파일 갱신 실패({}): {error}", marker.display()))?;
+    writeln!(
+        file,
+        "version=1\nvalidator_public_key={validator_public_key}\npeer_id={peer_id}"
+    )
+    .and_then(|_| file.sync_all())
+    .map_err(|error| format!("초기화 표시 파일 갱신 실패({}): {error}", marker.display()))
 }
 
 fn marker_value<'a>(contents: &'a str, name: &str) -> Option<&'a str> {
@@ -282,7 +332,7 @@ mod tests {
     }
 
     #[test]
-    fn initialized_node_rejects_replaced_node_key() {
+    fn initialized_node_adopts_existing_replaced_node_key() {
         let root = temp_root("replaced-node-key");
         prepare_server_files(
             &root.join("config/validator.key"),
@@ -296,7 +346,7 @@ mod tests {
         .unwrap();
         fs::remove_file(root.join("data/server.node.key")).unwrap();
         ieum_chain::node_key::load_or_create_node_key(root.join("data/server.node.key")).unwrap();
-        let error = prepare_server_files(
+        prepare_server_files(
             &root.join("config/validator.key"),
             &root.join("data/server.node.key"),
             &root.join("data/ledger"),
@@ -305,8 +355,14 @@ mod tests {
             &root.join("config/upgrades.json"),
             false,
         )
-        .unwrap_err();
-        assert!(error.contains("최초 초기화"));
+        .unwrap();
+        let identity =
+            ieum_chain::node_key::load_or_create_node_key(root.join("data/server.node.key"))
+                .unwrap();
+        let current_peer = libp2p::PeerId::from(identity.public()).to_string();
+        let marker = fs::read_to_string(root.join("data/.ieum-initialized")).unwrap();
+        assert!(marker.contains(&format!("peer_id={current_peer}")));
+        assert!(root.join("data/.ieum-initialized.previous").exists());
         fs::remove_dir_all(root).unwrap();
     }
 
