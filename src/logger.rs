@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::fs::{self, File, OpenOptions};
-use std::io::{self, BufReader, Write};
+use std::io::{BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 
@@ -8,7 +8,6 @@ const MAX_LOG_BYTES: u64 = 5 * 1024 * 1024;
 const MAX_COMPRESSED_LOGS: usize = 5;
 
 static SERVER_LOGGER: OnceLock<Mutex<RotatingLogger>> = OnceLock::new();
-static REPEATED_LINE_OPEN: OnceLock<Mutex<bool>> = OnceLock::new();
 static REPEATED_MESSAGES: OnceLock<Mutex<HashMap<String, usize>>> = OnceLock::new();
 
 pub fn init_server_log(path: impl AsRef<Path>) -> Result<(), String> {
@@ -22,7 +21,6 @@ pub fn init_server_log(path: impl AsRef<Path>) -> Result<(), String> {
 }
 
 pub fn write_line(message: &str, is_error: bool) {
-    finish_repeated_line();
     if is_error {
         eprintln!("{message}");
     } else {
@@ -38,13 +36,13 @@ pub fn write_line(message: &str, is_error: bool) {
     }
 }
 
-/// 같은 네트워크 오류가 반복될 때 터미널 한 줄의 횟수만 갱신합니다.
-/// 회전 로그에는 최초와 자릿수 요약만 남겨 장애 원인은 보존하되 로그 폭증은 막습니다.
+/// 같은 네트워크 오류는 최초와 10·100·1000회 누적 시점에만 새 줄로 출력합니다.
+/// carriage return으로 기존 줄을 덮어쓰지 않아 systemd와 비동기 로그가 섞이지 않습니다.
 pub fn write_repeated_error(message: &str) {
     write_repeated(message, true);
 }
 
-/// 같은 정상 이벤트가 반복될 때도 새 행을 만들지 않고 터미널 한 줄의 횟수만 갱신합니다.
+/// 같은 정상 이벤트도 최초와 누적 요약 시점에만 새 줄로 출력합니다.
 pub fn write_repeated_info(message: &str) {
     write_repeated(message, false);
 }
@@ -60,46 +58,28 @@ fn write_repeated(message: &str, is_error: bool) {
         *count = count.saturating_add(1);
         *count
     };
-    let state = REPEATED_LINE_OPEN.get_or_init(|| Mutex::new(false));
-    if let Ok(mut open) = state.lock() {
-        if is_error {
-            eprint!("\r\x1b[2K{message} ({count}회)");
-            let _ = io::stderr().flush();
+    if count == 1 || is_decimal_checkpoint(count) {
+        let suffix = if count == 1 {
+            "1회, 이후 동일 메시지 집계".to_string()
         } else {
-            print!("\r\x1b[2K{message} ({count}회)");
-            let _ = io::stdout().flush();
+            format!("{count}회 누적")
+        };
+        let line = format!("{message} ({suffix})");
+        if is_error {
+            eprintln!("{line}");
+        } else {
+            println!("{line}");
         }
-        // 파일에는 최초와 10·100·1000회 같은 요약 시점만 남깁니다.
-        // 터미널은 매번 같은 줄의 횟수만 갱신합니다.
-        if (count == 1 || is_decimal_checkpoint(count))
-            && let Some(logger) = SERVER_LOGGER.get()
+        if let Some(logger) = SERVER_LOGGER.get()
             && let Ok(mut logger) = logger.lock()
         {
-            let suffix = if count == 1 {
-                "1회, 이후 동일 오류 집계".to_string()
-            } else {
-                format!("{count}회 누적")
-            };
-            let _ = logger.append(&format!("{message} ({suffix})"));
+            let _ = logger.append(&line);
         }
-        *open = true;
     }
 }
 
 fn is_decimal_checkpoint(count: usize) -> bool {
     count >= 10 && count.to_string().bytes().skip(1).all(|digit| digit == b'0')
-}
-
-fn finish_repeated_line() {
-    let Some(state) = REPEATED_LINE_OPEN.get() else {
-        return;
-    };
-    if let Ok(mut open) = state.lock()
-        && *open
-    {
-        eprintln!();
-        *open = false;
-    }
 }
 
 struct RotatingLogger {
