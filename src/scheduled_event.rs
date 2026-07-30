@@ -1,4 +1,6 @@
 use crate::model::Address;
+use crate::network::{NodeRewardRegistration, ValidatorRegistration};
+use crate::wallet::verify_signature;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::HashSet;
@@ -24,6 +26,16 @@ pub enum ScheduledEventAction {
     },
     ProtocolCheckpoint {
         protocol_version: u32,
+    },
+    /// 최초 4검증자 구성이 완성됐을 때 검증자별로 한 번만 지급합니다.
+    BootstrapValidatorReward {
+        registrations: Vec<ValidatorRegistration>,
+        amount: u128,
+    },
+    /// 서명으로 소유권을 증명한 서로 다른 노드가 100개 이상 모였을 때 한 번만 지급합니다.
+    NodeMilestoneReward {
+        registrations: Vec<NodeRewardRegistration>,
+        amount: u128,
     },
 }
 
@@ -91,6 +103,64 @@ impl ScheduledEvent {
             ScheduledEventAction::ProtocolCheckpoint { protocol_version } => {
                 if *protocol_version == 0 {
                     return Err("프로토콜 버전은 1 이상이어야 합니다.".into());
+                }
+                return Ok(());
+            }
+            ScheduledEventAction::BootstrapValidatorReward {
+                registrations,
+                amount,
+            } => {
+                if registrations.len() != 4 || *amount == 0 {
+                    return Err(
+                        "최초 검증자 보상은 정확히 4명이고 금액은 0보다 커야 합니다.".into(),
+                    );
+                }
+                let mut peers = HashSet::new();
+                let mut addresses = HashSet::new();
+                for registration in registrations {
+                    if !peers.insert(&registration.peer_id)
+                        || !addresses.insert(&registration.validator_id)
+                    {
+                        return Err("최초 검증자 보상 증명에 중복 노드나 주소가 있습니다.".into());
+                    }
+                    verify_signature(
+                        &registration.validator_id,
+                        &ValidatorRegistration::bytes_to_sign(
+                            &registration.validator_id,
+                            &registration.peer_id,
+                        ),
+                        &registration.signature_hex,
+                    )?;
+                }
+                return Ok(());
+            }
+            ScheduledEventAction::NodeMilestoneReward {
+                registrations,
+                amount,
+            } => {
+                if registrations.len() != 100 || *amount == 0 {
+                    return Err(
+                        "노드 마일스톤 보상은 서로 다른 노드 정확히 100개가 필요합니다.".into(),
+                    );
+                }
+                let mut peers = HashSet::new();
+                let mut addresses = HashSet::new();
+                for registration in registrations {
+                    validate_reward_address(&registration.reward_address)?;
+                    registration.verify_node_identity()?;
+                    if !peers.insert(&registration.peer_id)
+                        || !addresses.insert(&registration.reward_address)
+                    {
+                        return Err("노드 마일스톤 보상 증명에 중복 노드나 주소가 있습니다.".into());
+                    }
+                    verify_signature(
+                        &registration.reward_address,
+                        &NodeRewardRegistration::bytes_to_sign(
+                            &registration.reward_address,
+                            &registration.peer_id,
+                        ),
+                        &registration.signature_hex,
+                    )?;
                 }
                 return Ok(());
             }
@@ -177,6 +247,13 @@ fn validate_address(address: &str) -> Result<(), String> {
     let value = address.strip_prefix("0x").unwrap_or(address);
     if value.len() != 40 || !value.bytes().all(|byte| byte.is_ascii_hexdigit()) {
         return Err(format!("잘못된 IEUM 주소: {address}"));
+    }
+    Ok(())
+}
+
+fn validate_reward_address(address: &str) -> Result<(), String> {
+    if address.len() != 64 || !address.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err(format!("잘못된 노드 보상 주소: {address}"));
     }
     Ok(())
 }

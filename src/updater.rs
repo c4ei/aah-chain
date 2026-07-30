@@ -31,6 +31,45 @@ pub enum UpdateResult {
     Installed,
 }
 
+#[derive(Clone, Debug, Deserialize)]
+pub struct AutoUpdateConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    pub manifest_url: String,
+    pub release_public_key: String,
+    #[serde(default = "default_check_interval_secs")]
+    pub check_interval_secs: u64,
+}
+
+fn default_check_interval_secs() -> u64 {
+    300
+}
+
+impl AutoUpdateConfig {
+    pub fn load_if_enabled(path: &Path) -> Result<Option<Self>, String> {
+        if !path.exists() {
+            return Ok(None);
+        }
+        let text = fs::read_to_string(path).map_err(|error| {
+            format!("자동 업데이트 설정 읽기 실패({}): {error}", path.display())
+        })?;
+        let config: Self = serde_json::from_str(&text).map_err(|error| {
+            format!("자동 업데이트 설정 형식 오류({}): {error}", path.display())
+        })?;
+        if !config.enabled {
+            return Ok(None);
+        }
+        if config.check_interval_secs < 60 {
+            return Err("자동 업데이트 확인 간격은 최소 60초여야 합니다.".into());
+        }
+        if !config.manifest_url.starts_with("https://") {
+            return Err("자동 업데이트 manifest 주소는 HTTPS여야 합니다.".into());
+        }
+        decode_fixed::<32>(&config.release_public_key, "릴리스 공개키")?;
+        Ok(Some(config))
+    }
+}
+
 #[derive(Serialize)]
 struct UnsignedManifest<'a> {
     version: &'a str,
@@ -115,6 +154,15 @@ pub fn install_non_interactive(
     Ok(UpdateResult::Installed)
 }
 
+/// P2P 알림은 새 버전 확인을 앞당기는 힌트일 뿐입니다. 실제 설치 여부는 로컬에
+/// 고정된 URL과 공개키로 manifest 서명을 다시 검증해서 결정합니다.
+pub fn install_if_newer(
+    manifest_url: &str,
+    release_public_key: &str,
+) -> Result<UpdateResult, String> {
+    install_non_interactive(manifest_url, release_public_key)
+}
+
 fn fetch_manifest(url: &str) -> Result<UpdateManifest, String> {
     let bytes = download_https(url)?;
     serde_json::from_slice(&bytes).map_err(|error| format!("업데이트 manifest JSON 오류: {error}"))
@@ -193,7 +241,7 @@ fn sibling(current: &Path, suffix: &str) -> Result<PathBuf, String> {
     Ok(current.with_file_name(format!("{name}.{suffix}")))
 }
 
-fn is_newer(current: &str, candidate: &str) -> Result<bool, String> {
+pub fn is_newer(current: &str, candidate: &str) -> Result<bool, String> {
     fn parts(value: &str) -> Result<Vec<u64>, String> {
         value
             .trim_start_matches('v')
@@ -249,7 +297,8 @@ fn download_https(url: &str) -> Result<Vec<u8>, String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{is_newer, validate_executable_bytes};
+    use super::{AutoUpdateConfig, is_newer, validate_executable_bytes};
+    use std::fs;
 
     #[test]
     fn semantic_numeric_version_comparison() {
@@ -264,5 +313,18 @@ mod tests {
         let error = validate_executable_bytes(b"\xfd7zXZ\0").unwrap_err();
         assert!(error.contains("tar.xz"));
         assert!(validate_executable_bytes(b"\x7fELFrest").is_ok());
+    }
+
+    #[test]
+    fn disabled_auto_update_config_is_ignored() {
+        let path =
+            std::env::temp_dir().join(format!("ieum-update-disabled-{}.json", std::process::id()));
+        fs::write(
+            &path,
+            r#"{"enabled":false,"manifest_url":"","release_public_key":""}"#,
+        )
+        .unwrap();
+        assert!(AutoUpdateConfig::load_if_enabled(&path).unwrap().is_none());
+        fs::remove_file(path).unwrap();
     }
 }

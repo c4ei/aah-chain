@@ -304,6 +304,22 @@ fn apply_system_events(
                 transfer_from_foundation(balances, victim, *amount)?;
             }
             ScheduledEventAction::ProtocolCheckpoint { .. } => {}
+            ScheduledEventAction::BootstrapValidatorReward {
+                registrations,
+                amount,
+            } => {
+                for registration in registrations {
+                    transfer_from_foundation(balances, &registration.validator_id, *amount)?;
+                }
+            }
+            ScheduledEventAction::NodeMilestoneReward {
+                registrations,
+                amount,
+            } => {
+                for registration in registrations {
+                    transfer_from_foundation(balances, &registration.reward_address, *amount)?;
+                }
+            }
         }
     }
     Ok(())
@@ -426,4 +442,66 @@ fn now() -> u64 {
         .duration_since(UNIX_EPOCH)
         .expect("시스템 시간이 잘못되었습니다.")
         .as_secs()
+}
+
+#[cfg(test)]
+mod initial_reward_tests {
+    use super::*;
+    use crate::network::ValidatorRegistration;
+    use crate::scheduled_event::{ScheduledEvent, ScheduledEventAction};
+    use crate::wallet::Wallet;
+
+    #[test]
+    fn bootstrap_validator_reward_is_paid_exactly_once() {
+        let mut chain = Blockchain::new(vec![(
+            FOUNDATION_FEE_ADDRESS.into(),
+            1_000 * 10u128.pow(18),
+        )]);
+        let registrations: Vec<_> = (1..=4)
+            .map(|index| {
+                let wallet = Wallet::from_seed([index; 32]);
+                let peer_id = format!("peer-{index}");
+                ValidatorRegistration {
+                    validator_id: wallet.address(),
+                    peer_id: peer_id.clone(),
+                    signature_hex: wallet.sign_bytes(&ValidatorRegistration::bytes_to_sign(
+                        &wallet.address(),
+                        &peer_id,
+                    )),
+                }
+            })
+            .collect();
+        let event = ScheduledEvent {
+            id: "ieum-bootstrap-validator-reward-v1".into(),
+            execute_at: 1,
+            action: ScheduledEventAction::BootstrapValidatorReward {
+                registrations: registrations.clone(),
+                amount: 10 * 10u128.pow(18),
+            },
+        };
+        let first = Block::new(
+            1,
+            chain.tip_hash().into(),
+            1,
+            registrations[0].validator_id.clone(),
+            vec![],
+        )
+        .with_system_events(vec![event.clone()]);
+        chain.apply_block(first).unwrap();
+        for registration in &registrations {
+            assert_eq!(
+                chain.balance_of(&registration.validator_id),
+                10 * 10u128.pow(18)
+            );
+        }
+        let second = Block::new(
+            2,
+            chain.tip_hash().into(),
+            2,
+            registrations[0].validator_id.clone(),
+            vec![],
+        )
+        .with_system_events(vec![event]);
+        assert!(chain.apply_block(second).is_err());
+    }
 }

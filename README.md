@@ -1,11 +1,11 @@
-# IEUM Chain v0.19.6 쉬운 실행 안내
+# IEUM Chain v0.19.7 쉬운 실행 안내
 
 ## Ubuntu 신규 노드 배포본 자동 생성
 
 릴리스 빌드 후 설치 가능한 노드 압축을 한 번에 만듭니다.
 
 ```bash
-scripts/make-node-package.sh 0.19.6
+scripts/make-node-package.sh 0.19.7
 ```
 
 위 명령은 포맷·Clippy·전체 테스트·릴리스 빌드까지 통과한 경우에만 압축을
@@ -235,5 +235,16 @@ v0.18.1에는 지갑이 화상채팅을 연결할 때 필요한 암호화 통신
 
 검증자 콘솔에서 개인키를 붙여 넣어 송금하지 마세요. 송금 개인키는 지갑의 암호화
 keystore 또는 운영체제 보안 저장소에만 보관해야 합니다.
+
+v0.19.7의 최초 참여 보상 주소와 잔액 전송은 노드에서 다음 명령으로 처리합니다.
+
+```bash
+./ieum-chain reward address
+./ieum-chain reward send --to 0x받는지갑주소 --amount 1 --fee 0.000001
+```
+
+`reward send`는 실행 중인 로컬 RPC `127.0.0.1:8989`에서 nonce를 조회하고
+`data/reward.key`로 서명한 뒤 거래를 제출합니다. 보상 키 파일은 다른 서버와
+공유하거나 Git에 커밋하지 마세요.
 
 개발자용 빌드, 테스트, 구조 설명은 [README_DEV.md](README_DEV.md)를 참고하세요.

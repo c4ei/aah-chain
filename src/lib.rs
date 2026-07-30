@@ -62,7 +62,10 @@ pub use mempool::Mempool;
 pub use metrics::{NodeMetrics, prometheus_router};
 pub use model::{Block, Transaction};
 pub use modules::{AppModule, ModuleContext, ModuleRouter, StateMigration};
-pub use network::{NetworkCommand, NetworkConfig, NetworkEvent, P2pNode, ValidatorRegistration};
+pub use network::{
+    NetworkCommand, NetworkConfig, NetworkEvent, NodeRewardRegistration, P2pNode,
+    ValidatorRegistration,
+};
 pub use operations::{NodeStorageMode, PruningPolicy, StorageManifest};
 pub use peer_guard::{PeerDecision, PeerGuard};
 pub use rpc::{RpcConfig, RpcNodeHandle, RpcServer};

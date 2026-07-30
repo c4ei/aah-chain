@@ -33,6 +33,41 @@ pub struct ValidatorRegistration {
     pub signature_hex: String,
 }
 
+/// 노드 보상 지갑과 영구 PeerId의 소유권을 함께 증명합니다.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct NodeRewardRegistration {
+    pub reward_address: String,
+    pub peer_id: String,
+    pub signature_hex: String,
+    pub node_public_key_hex: String,
+    pub node_signature_hex: String,
+}
+
+impl NodeRewardRegistration {
+    pub fn bytes_to_sign(reward_address: &str, peer_id: &str) -> Vec<u8> {
+        format!("ieum-node-reward-registration-v1:{reward_address}:{peer_id}").into_bytes()
+    }
+
+    pub fn verify_node_identity(&self) -> Result<(), String> {
+        let public_key_bytes =
+            hex::decode(&self.node_public_key_hex).map_err(|_| "노드 공개키 hex 오류")?;
+        let public_key = libp2p::identity::PublicKey::try_decode_protobuf(&public_key_bytes)
+            .map_err(|_| "노드 공개키 형식 오류")?;
+        let expected_peer_id = PeerId::from(public_key.clone()).to_string();
+        if expected_peer_id != self.peer_id {
+            return Err("노드 공개키에서 계산한 PeerId가 등록 PeerId와 다릅니다.".into());
+        }
+        let signature = hex::decode(&self.node_signature_hex).map_err(|_| "노드 서명 hex 오류")?;
+        if !public_key.verify(
+            &Self::bytes_to_sign(&self.reward_address, &self.peer_id),
+            &signature,
+        ) {
+            return Err("PeerId 개인키 소유권 서명이 올바르지 않습니다.".into());
+        }
+        Ok(())
+    }
+}
+
 impl ValidatorRegistration {
     pub fn bytes_to_sign(validator_id: &str, peer_id: &str) -> Vec<u8> {
         format!("ieum-validator-registration-v1:{validator_id}:{peer_id}").into_bytes()
@@ -73,6 +108,10 @@ pub enum WireMessage {
     Consensus(ConsensusMessage),
     Evidence(DoubleVoteEvidence),
     ValidatorRegistration(ValidatorRegistration),
+    NodeRewardRegistration(NodeRewardRegistration),
+    UpdateAvailable {
+        version: String,
+    },
     SyncRequest {
         requester: String,
         from_height: u64,
@@ -93,6 +132,10 @@ pub enum NetworkCommand {
     PublishProposal(SignedProposal),
     PublishEvidence(DoubleVoteEvidence),
     PublishValidatorRegistration(ValidatorRegistration),
+    PublishNodeRewardRegistration(NodeRewardRegistration),
+    PublishUpdateAvailable {
+        version: String,
+    },
     RequestSync {
         from_height: u64,
     },
@@ -156,6 +199,14 @@ pub enum NetworkEvent {
     ValidatorRegistrationReceived {
         source: PeerId,
         registration: ValidatorRegistration,
+    },
+    NodeRewardRegistrationReceived {
+        source: PeerId,
+        registration: NodeRewardRegistration,
+    },
+    UpdateAvailableReceived {
+        source: PeerId,
+        version: String,
     },
     SyncRequested {
         source: PeerId,
@@ -256,6 +307,18 @@ impl fmt::Display for NetworkEvent {
                 formatter,
                 "[검증자 등록 수신] PeerId: {source}, 검증자: {}",
                 registration.validator_id
+            ),
+            Self::NodeRewardRegistrationReceived {
+                source,
+                registration,
+            } => write!(
+                formatter,
+                "[노드 보상 등록 수신] PeerId: {source}, 보상 주소: {}",
+                registration.reward_address
+            ),
+            Self::UpdateAvailableReceived { source, version } => write!(
+                formatter,
+                "[P2P 업데이트 알림] PeerId: {source}, 버전: {version}"
             ),
             Self::SyncRequested {
                 source,
@@ -448,6 +511,20 @@ impl P2pNode {
                                     &mut swarm,
                                     CONSENSUS_TOPIC,
                                     &WireMessage::ValidatorRegistration(registration),
+                                );
+                            }
+                            Some(NetworkCommand::PublishNodeRewardRegistration(registration)) => {
+                                publish(
+                                    &mut swarm,
+                                    CONSENSUS_TOPIC,
+                                    &WireMessage::NodeRewardRegistration(registration),
+                                );
+                            }
+                            Some(NetworkCommand::PublishUpdateAvailable { version }) => {
+                                publish(
+                                    &mut swarm,
+                                    CONSENSUS_TOPIC,
+                                    &WireMessage::UpdateAvailable { version },
                                 );
                             }
                             Some(NetworkCommand::RequestSync { from_height }) => {
@@ -657,6 +734,7 @@ async fn handle_swarm_event(
             ..
         })) => {
             let peer_key = propagation_source.to_string();
+            let message_source = message.source.unwrap_or(propagation_source);
             if guard.check(&peer_key) == PeerDecision::TemporarilyBlocked {
                 return Ok(());
             }
@@ -702,6 +780,16 @@ async fn handle_swarm_event(
                         registration,
                     }
                 }
+                WireMessage::NodeRewardRegistration(registration) => {
+                    NetworkEvent::NodeRewardRegistrationReceived {
+                        source: message_source,
+                        registration,
+                    }
+                }
+                WireMessage::UpdateAvailable { version } => NetworkEvent::UpdateAvailableReceived {
+                    source: propagation_source,
+                    version,
+                },
                 WireMessage::SyncRequest {
                     requester,
                     from_height,

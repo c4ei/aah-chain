@@ -465,10 +465,61 @@ impl ConsensusRuntime {
         if block.timestamp > now.saturating_add(MAX_CLOCK_DRIFT_SECONDS) {
             return Err("블록 시각이 허용된 미래 오차를 넘었습니다.".into());
         }
+        let configured_events: Vec<_> = block
+            .system_events
+            .iter()
+            .filter(|event| {
+                !matches!(
+                    &event.action,
+                    crate::scheduled_event::ScheduledEventAction::BootstrapValidatorReward { .. }
+                        | crate::scheduled_event::ScheduledEventAction::NodeMilestoneReward { .. }
+                )
+            })
+            .cloned()
+            .collect();
         self.event_schedule.validate_block_events(
             block.timestamp,
-            &block.system_events,
+            &configured_events,
             self.chain.executed_events(),
-        )
+        )?;
+        for event in &block.system_events {
+            match &event.action {
+                crate::scheduled_event::ScheduledEventAction::BootstrapValidatorReward {
+                    registrations,
+                    ..
+                } if event.id == "ieum-bootstrap-validator-reward-v1" => {
+                    let mut rewarded: Vec<_> = registrations
+                        .iter()
+                        .map(|registration| registration.validator_id.clone())
+                        .collect();
+                    let mut active: Vec<_> = self
+                        .validators
+                        .iter()
+                        .map(|validator| validator.id.clone())
+                        .collect();
+                    rewarded.sort();
+                    active.sort();
+                    if rewarded != active {
+                        return Err(
+                            "최초 검증자 보상 대상이 현재 활성 검증자 집합과 다릅니다.".into()
+                        );
+                    }
+                }
+                crate::scheduled_event::ScheduledEventAction::NodeMilestoneReward { .. }
+                    if event.id == "ieum-node-100-reward-v1" => {}
+                crate::scheduled_event::ScheduledEventAction::BootstrapValidatorReward {
+                    ..
+                }
+                | crate::scheduled_event::ScheduledEventAction::NodeMilestoneReward { .. } => {
+                    return Err("내장 최초 보상 이벤트 ID가 올바르지 않습니다.".into());
+                }
+                _ => continue,
+            }
+            event.validate()?;
+            if self.chain.executed_events().contains(&event.id) {
+                return Err(format!("이벤트 {}는 이미 실행됐습니다.", event.id));
+            }
+        }
+        Ok(())
     }
 }

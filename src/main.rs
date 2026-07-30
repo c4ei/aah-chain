@@ -1,16 +1,18 @@
 use clap::{Args as ClapArgs, Parser, Subcommand};
 use ieum_chain::{
     ConsensusRuntime, ConsensusTimeouts, EventSchedule, EvidenceStore, ExternalSigner,
-    FinalityStore, NetworkCommand, NetworkConfig, NetworkEvent, P2pNode, RpcConfig, RpcServer,
-    SyncTip, TipQuorum, UpgradeSchedule, Validator, ValidatorRegistration, ValidatorSigner, Wallet,
-    log_error, log_info, logger::init_server_log, node_key::load_or_create_node_key,
+    FinalityStore, NetworkCommand, NetworkConfig, NetworkEvent, NodeRewardRegistration, P2pNode,
+    RpcConfig, RpcServer, ScheduledEvent, ScheduledEventAction, SyncTip, TipQuorum,
+    UpgradeSchedule, Validator, ValidatorRegistration, ValidatorSigner, Wallet, log_error,
+    log_info, logger::init_server_log, node_key::load_or_create_node_key,
 };
 use libp2p::{Multiaddr, multiaddr::Protocol};
+use rand_core::{OsRng, RngCore};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fs;
 use std::io::{self, Write};
-use std::net::{IpAddr, Ipv4Addr, TcpListener, UdpSocket};
+use std::net::{IpAddr, Ipv4Addr, TcpListener, TcpStream, UdpSocket};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -20,6 +22,7 @@ const DEFAULT_BOOTSTRAP_PEER: &str = "/dns4/node.ieum.aah.name/udp/7001/quic-v1/
 const SERVER_INSTANCE_PORT: u16 = 49_889;
 const CLIENT_INSTANCE_PORT: u16 = 49_890;
 const SUPPORTED_PROTOCOL_VERSION: u32 = 2;
+const AUTO_UPDATE_CONFIG: &str = "config/update.json";
 
 mod installation;
 
@@ -55,6 +58,35 @@ enum Command {
     Node {
         #[command(subcommand)]
         command: NodeCommand,
+    },
+    /// 이 노드의 최초 참여 보상 지갑을 조회하거나 송금합니다.
+    Reward {
+        #[command(subcommand)]
+        command: RewardCommand,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum RewardCommand {
+    /// 이 노드의 영구 보상 주소를 출력합니다.
+    Address {
+        #[arg(long, default_value = "data/reward.key")]
+        key: PathBuf,
+    },
+    /// 보상 잔액을 다른 IEUM 지갑으로 서명 전송합니다.
+    Send {
+        #[arg(long)]
+        to: String,
+        /// 사람이 읽는 IEUM 단위(예: 1 또는 0.25)
+        #[arg(long)]
+        amount: String,
+        /// 사람이 읽는 IEUM 단위. 기본 0.000001 IEUM
+        #[arg(long, default_value = "0.000001")]
+        fee: String,
+        #[arg(long, default_value = "data/reward.key")]
+        key: PathBuf,
+        #[arg(long, default_value_t = 8989)]
+        rpc_port: u16,
     },
 }
 
@@ -210,6 +242,7 @@ async fn main() -> Result<(), String> {
     let args = Args::parse();
     let (mode, mut args, bootstrap_peers, is_client) = match args.command {
         Some(Command::ValidatorKey { command }) => return run_validator_key_command(command),
+        Some(Command::Reward { command }) => return run_reward_command(command),
         Some(Command::Node { command }) => return run_node_command(command),
         Some(Command::Update {
             manifest_url,
@@ -313,6 +346,7 @@ async fn main() -> Result<(), String> {
 
     let identity_key = load_or_create_node_key(&args.node_key)?;
     let local_peer_id = libp2p::PeerId::from(identity_key.public());
+    let reward_node_key = identity_key.clone();
     let bootstrap_peers = bootstrap_peers
         .into_iter()
         .filter(|address| multiaddr_peer_id(address).as_ref() != Some(&local_peer_id))
@@ -395,6 +429,25 @@ async fn main() -> Result<(), String> {
     if let Some(registration) = &local_registration {
         registrations.insert(registration.validator_id.clone(), registration.clone());
     }
+    let reward_wallet = load_or_create_reward_wallet(Path::new("data/reward.key"))?;
+    let reward_registration_bytes =
+        NodeRewardRegistration::bytes_to_sign(&reward_wallet.address(), &peer_id.to_string());
+    let local_reward_registration = NodeRewardRegistration {
+        reward_address: reward_wallet.address(),
+        peer_id: peer_id.to_string(),
+        signature_hex: reward_wallet.sign_bytes(&reward_registration_bytes),
+        node_public_key_hex: hex::encode(reward_node_key.public().encode_protobuf()),
+        node_signature_hex: hex::encode(
+            reward_node_key
+                .sign(&reward_registration_bytes)
+                .map_err(|error| format!("노드 보상 등록 서명 실패: {error}"))?,
+        ),
+    };
+    let mut node_reward_registrations = BTreeMap::new();
+    node_reward_registrations.insert(
+        local_reward_registration.peer_id.clone(),
+        local_reward_registration.clone(),
+    );
     let upgrades = UpgradeSchedule::load("config/upgrades.json")?;
     upgrades.ensure_supported(
         rpc.chain()?.tip_height().saturating_add(1),
@@ -424,6 +477,14 @@ async fn main() -> Result<(), String> {
     }
     let mut consensus_tick = tokio::time::interval(Duration::from_millis(500));
     let mut registration_tick = tokio::time::interval(Duration::from_secs(2));
+    let auto_update =
+        ieum_chain::updater::AutoUpdateConfig::load_if_enabled(Path::new(AUTO_UPDATE_CONFIG))?;
+    let update_interval = auto_update
+        .as_ref()
+        .map(|config| config.check_interval_secs)
+        .unwrap_or(24 * 60 * 60);
+    let mut update_tick = tokio::time::interval(Duration::from_secs(update_interval));
+    update_tick.tick().await;
     let mut sync_quorum = TipQuorum::new(args.sync_quorum_peers)?;
 
     log_info!("IEUM {mode} 노드 시작: {peer_id}");
@@ -431,6 +492,7 @@ async fn main() -> Result<(), String> {
     log_info!("P2P 포트: {}/UDP", args.port);
     log_info!("RPC 주소: {}:{}", args.rpc_host, args.rpc_port);
     log_info!("원장 경로: {}", args.rpc_data_dir.display());
+    log_info!("노드 보상 주소: {}", reward_wallet.address());
     if is_client {
         log_info!("운영 서버 자동 연결 대상:");
         for peer in &startup_peers {
@@ -441,13 +503,43 @@ async fn main() -> Result<(), String> {
 
     loop {
         tokio::select! {
-            _ = registration_tick.tick(), if !is_client && !local_is_validator => {
-                if let Some(registration) = &local_registration {
+            _ = update_tick.tick(), if auto_update.is_some() => {
+                let config = auto_update.as_ref().expect("guarded by is_some");
+                match ieum_chain::updater::install_if_newer(
+                    &config.manifest_url,
+                    &config.release_public_key,
+                ) {
+                    Ok(ieum_chain::updater::UpdateResult::Current) => {}
+                    Ok(ieum_chain::updater::UpdateResult::Installed) => {
+                        log_info!("[자동 업데이트 완료] 새 실행 파일을 설치했습니다. 서비스를 재시작합니다.");
+                        return Ok(());
+                    }
+                    Err(error) => log_error!("[자동 업데이트 실패] {error}"),
+                }
+                commands.send(NetworkCommand::PublishUpdateAvailable {
+                    version: env!("CARGO_PKG_VERSION").to_string(),
+                }).await.map_err(|error| error.to_string())?;
+            }
+            _ = registration_tick.tick() => {
+                if !consensus
+                    .chain
+                    .executed_events()
+                    .contains("ieum-bootstrap-validator-reward-v1")
+                    && let Some(registration) = &local_registration
+                {
                     commands
-                        .send(NetworkCommand::PublishValidatorRegistration(registration.clone()))
+                        .send(NetworkCommand::PublishValidatorRegistration(
+                            registration.clone(),
+                        ))
                         .await
                         .map_err(|error| error.to_string())?;
                 }
+                commands
+                    .send(NetworkCommand::PublishNodeRewardRegistration(
+                        local_reward_registration.clone(),
+                    ))
+                    .await
+                    .map_err(|error| error.to_string())?;
             }
             _ = consensus_tick.tick() => {
                 for envelope in rpc.drain_outbound_communication()? {
@@ -477,8 +569,47 @@ async fn main() -> Result<(), String> {
                     )?;
                     let pending = rpc.drain_transactions(1_000)?;
                     let timestamp = unix_timestamp();
-                    let due_events =
+                    let mut due_events =
                         event_schedule.due(timestamp, consensus.chain.executed_events());
+                    if !consensus
+                        .chain
+                        .executed_events()
+                        .contains("ieum-bootstrap-validator-reward-v1")
+                    {
+                        let validator_proofs: Vec<_> = validators
+                            .iter()
+                            .filter_map(|validator| registrations.get(&validator.id).cloned())
+                            .collect();
+                        if validator_proofs.len() == 4 {
+                            due_events.push(ScheduledEvent {
+                                id: "ieum-bootstrap-validator-reward-v1".into(),
+                                execute_at: timestamp,
+                                action: ScheduledEventAction::BootstrapValidatorReward {
+                                    registrations: validator_proofs,
+                                    amount: 10 * 10u128.pow(18),
+                                },
+                            });
+                        }
+                    }
+                    if !consensus
+                        .chain
+                        .executed_events()
+                        .contains("ieum-node-100-reward-v1")
+                        && node_reward_registrations.len() >= 100
+                    {
+                        due_events.push(ScheduledEvent {
+                            id: "ieum-node-100-reward-v1".into(),
+                            execute_at: timestamp,
+                            action: ScheduledEventAction::NodeMilestoneReward {
+                                registrations: node_reward_registrations
+                                    .values()
+                                    .take(100)
+                                    .cloned()
+                                    .collect(),
+                                amount: 10u128.pow(18),
+                            },
+                        });
+                    }
                     if !pending.is_empty() || !due_events.is_empty() {
                         let previous = consensus.chain.blocks.last().unwrap();
                         let block = ieum_chain::Block::new(
@@ -529,6 +660,14 @@ async fn main() -> Result<(), String> {
                             commands.send(NetworkCommand::PublishValidatorRegistration(registration.clone()))
                                 .await.map_err(|e| e.to_string())?;
                         }
+                        commands.send(NetworkCommand::PublishNodeRewardRegistration(
+                            local_reward_registration.clone(),
+                        )).await.map_err(|e| e.to_string())?;
+                        if auto_update.is_some() {
+                            commands.send(NetworkCommand::PublishUpdateAvailable {
+                                version: env!("CARGO_PKG_VERSION").to_string(),
+                            }).await.map_err(|error| error.to_string())?;
+                        }
                     }
                     Some(NetworkEvent::ValidatorRegistrationReceived { source, registration }) if !is_client => {
                         ieum_chain::logger::write_repeated_info(&format!(
@@ -549,9 +688,7 @@ async fn main() -> Result<(), String> {
                                 registrations.len().min(4)
                             );
                         }
-                        if registrations.len() >= 4 && consensus.chain.tip_height() == 0
-                            && validators.len() < 4
-                        {
+                        if registrations.len() >= 4 && consensus.chain.tip_height() == 0 {
                             let selected: Vec<_> = registrations
                                 .keys()
                                 .take(4)
@@ -583,6 +720,63 @@ async fn main() -> Result<(), String> {
                                  현재 검증자 승인 및 다음 epoch 적용 전까지 합의권을 부여하지 않습니다.",
                                 registration_id
                             );
+                        }
+                    }
+                    Some(NetworkEvent::NodeRewardRegistrationReceived { source, registration }) => {
+                        if source.to_string() != registration.peer_id {
+                            log_error!("[노드 보상 등록 거부] 전파 PeerId와 등록 PeerId가 다릅니다.");
+                            continue;
+                        }
+                        if let Err(error) = ieum_chain::wallet::verify_signature(
+                            &registration.reward_address,
+                            &NodeRewardRegistration::bytes_to_sign(
+                                &registration.reward_address,
+                                &registration.peer_id,
+                            ),
+                            &registration.signature_hex,
+                        ) {
+                            log_error!("[노드 보상 등록 거부] {error}");
+                            continue;
+                        }
+                        if let Err(error) = registration.verify_node_identity() {
+                            log_error!("[노드 보상 등록 거부] {error}");
+                            continue;
+                        }
+                        let is_new = node_reward_registrations
+                            .insert(registration.peer_id.clone(), registration)
+                            .is_none();
+                        if is_new {
+                            log_info!(
+                                "[노드 보상 등록] 서로 다른 노드 {}/100개 확인",
+                                node_reward_registrations.len().min(100)
+                            );
+                        }
+                    }
+                    Some(NetworkEvent::UpdateAvailableReceived { source, version }) => {
+                        let Some(config) = auto_update.as_ref() else {
+                            continue;
+                        };
+                        if !ieum_chain::updater::is_newer(env!("CARGO_PKG_VERSION"), &version)
+                            .unwrap_or(false)
+                        {
+                            continue;
+                        }
+                        log_info!(
+                            "[P2P 업데이트 알림] PeerId: {source}, 버전: {version}. \
+                             로컬 릴리스 공개키로 재검증합니다."
+                        );
+                        match ieum_chain::updater::install_if_newer(
+                            &config.manifest_url,
+                            &config.release_public_key,
+                        ) {
+                            Ok(ieum_chain::updater::UpdateResult::Current) => {}
+                            Ok(ieum_chain::updater::UpdateResult::Installed) => {
+                                log_info!(
+                                    "[P2P 자동 업데이트 완료] 새 실행 파일을 설치했습니다. 서비스를 재시작합니다."
+                                );
+                                return Ok(());
+                            }
+                            Err(error) => log_error!("[P2P 자동 업데이트 거부] {error}"),
                         }
                     }
                     Some(NetworkEvent::TransactionReceived { transaction, .. }) => {
@@ -849,6 +1043,136 @@ async fn finalize_if_ready(
 
 fn testnet_validator_seed(index: u8) -> [u8; 32] {
     [index; 32]
+}
+
+fn load_or_create_reward_wallet(path: &Path) -> Result<Wallet, String> {
+    if path.exists() {
+        let value = fs::read_to_string(path)
+            .map_err(|error| format!("노드 보상 키를 읽지 못했습니다: {error}"))?;
+        let seed: [u8; 32] = hex::decode(value.trim().trim_start_matches("0x"))
+            .map_err(|_| "노드 보상 키가 hex 문자열이 아닙니다.".to_string())?
+            .try_into()
+            .map_err(|_| "노드 보상 키는 정확히 32바이트여야 합니다.".to_string())?;
+        return Ok(Wallet::from_seed(seed));
+    }
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+    }
+    let mut seed = [0u8; 32];
+    OsRng.fill_bytes(&mut seed);
+    fs::write(path, hex::encode(seed))
+        .map_err(|error| format!("노드 보상 키를 저장하지 못했습니다: {error}"))?;
+    set_private_file_permissions(path)?;
+    Ok(Wallet::from_seed(seed))
+}
+
+fn run_reward_command(command: RewardCommand) -> Result<(), String> {
+    match command {
+        RewardCommand::Address { key } => {
+            println!("{}", load_or_create_reward_wallet(&key)?.address());
+            Ok(())
+        }
+        RewardCommand::Send {
+            to,
+            amount,
+            fee,
+            key,
+            rpc_port,
+        } => {
+            let wallet = load_or_create_reward_wallet(&key)?;
+            let amount = parse_ieum_amount(&amount)?;
+            let fee = parse_ieum_amount(&fee)?;
+            let nonce_response = rpc_call(
+                rpc_port,
+                serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "eth_getTransactionCount",
+                    "params": [wallet.address(), "pending"]
+                }),
+            )?;
+            let nonce_text = nonce_response
+                .get("result")
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(|| format!("nonce 조회 실패: {nonce_response}"))?;
+            let nonce = u64::from_str_radix(nonce_text.trim_start_matches("0x"), 16)
+                .map_err(|_| "RPC nonce 형식이 올바르지 않습니다.".to_string())?;
+            let transaction = wallet.sign_transfer(to, amount, fee, nonce);
+            let response = rpc_call(
+                rpc_port,
+                serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "id": 2,
+                    "method": "ieum_sendSignedTransaction",
+                    "params": [transaction]
+                }),
+            )?;
+            if let Some(error) = response.get("error") {
+                return Err(format!("송금 제출 실패: {error}"));
+            }
+            println!(
+                "송금 제출 완료: {}",
+                response
+                    .get("result")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("거래 해시 없음")
+            );
+            Ok(())
+        }
+    }
+}
+
+fn parse_ieum_amount(value: &str) -> Result<u128, String> {
+    let (whole, fraction) = value.split_once('.').unwrap_or((value, ""));
+    if whole.is_empty()
+        || fraction.len() > 18
+        || !whole.bytes().all(|byte| byte.is_ascii_digit())
+        || !fraction.bytes().all(|byte| byte.is_ascii_digit())
+    {
+        return Err("IEUM 금액은 소수점 이하 최대 18자리 숫자여야 합니다.".into());
+    }
+    let whole: u128 = whole
+        .parse()
+        .map_err(|_| "IEUM 금액이 너무 큽니다.".to_string())?;
+    let fraction = format!("{fraction:0<18}")
+        .parse::<u128>()
+        .map_err(|_| "IEUM 소수 금액이 올바르지 않습니다.".to_string())?;
+    whole
+        .checked_mul(10u128.pow(18))
+        .and_then(|value| value.checked_add(fraction))
+        .ok_or_else(|| "IEUM 금액이 너무 큽니다.".into())
+}
+
+fn rpc_call(port: u16, request: serde_json::Value) -> Result<serde_json::Value, String> {
+    let body = serde_json::to_vec(&request).map_err(|error| error.to_string())?;
+    let mut stream = TcpStream::connect((Ipv4Addr::LOCALHOST, port))
+        .map_err(|error| format!("로컬 RPC 연결 실패(127.0.0.1:{port}): {error}"))?;
+    write!(
+        stream,
+        "POST / HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        body.len()
+    )
+    .map_err(|error| error.to_string())?;
+    stream.write_all(&body).map_err(|error| error.to_string())?;
+    let mut response = Vec::new();
+    std::io::Read::read_to_end(&mut stream, &mut response).map_err(|error| error.to_string())?;
+    let split = response
+        .windows(4)
+        .position(|window| window == b"\r\n\r\n")
+        .ok_or("RPC HTTP 응답 형식이 올바르지 않습니다.")?;
+    serde_json::from_slice(&response[split + 4..])
+        .map_err(|error| format!("RPC JSON 응답 오류: {error}"))
+}
+
+#[cfg(unix)]
+fn set_private_file_permissions(path: &Path) -> Result<(), String> {
+    use std::os::unix::fs::PermissionsExt;
+    fs::set_permissions(path, fs::Permissions::from_mode(0o600)).map_err(|error| error.to_string())
+}
+
+#[cfg(not(unix))]
+fn set_private_file_permissions(_path: &Path) -> Result<(), String> {
+    Ok(())
 }
 
 fn load_validator_wallet(

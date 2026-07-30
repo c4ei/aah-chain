@@ -51,6 +51,10 @@ for config_name in genesis.json events.json upgrades.json bootstrap.json; do
             "$package_root/config/$config_name"
     fi
 done
+if [[ -f "$root_dir/config/update.example.json" ]]; then
+    install -m 644 "$root_dir/config/update.example.json" \
+        "$package_root/config/update.example.json"
+fi
 
 install -d "$output_dir"
 tar -C "$stage_dir" -cJf "$archive" "ieum-chain-node-v${version}"

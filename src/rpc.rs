@@ -660,6 +660,21 @@ fn dispatch(
         }
         "eth_sendTransaction" | "personal_sendTransaction" => send_transaction(state, params),
         "eth_sendRawTransaction" => send_raw_transaction(state, params),
+        "ieum_sendSignedTransaction" => {
+            let value = params
+                .first()
+                .cloned()
+                .ok_or_else(|| (-32602, "서명 거래 객체가 필요합니다.".into()))?;
+            let transaction: Transaction = serde_json::from_value(value)
+                .map_err(|error| (-32602, format!("서명 거래 형식 오류: {error}")))?;
+            crate::wallet::verify_transaction(&transaction).map_err(|message| (-32000, message))?;
+            let transaction_id = transaction.id();
+            write_state(state)?
+                .pool
+                .add(transaction)
+                .map_err(|message| (-32000, message))?;
+            Ok(json!(format!("0x{transaction_id}")))
+        }
         _ => Err((-32601, format!("지원하지 않는 JSON-RPC 메서드: {method}"))),
     }
 }
