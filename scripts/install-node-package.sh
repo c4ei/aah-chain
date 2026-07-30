@@ -45,11 +45,10 @@ for config_name in genesis.json events.json upgrades.json bootstrap.json; do
         install -m 640 -o "$run_user" -g "$run_group" "$config_src" "$config_dst"
     fi
 done
-if [[ -f "$package_dir/config/update.example.json" \
-    && ! -e "$install_dir/config/update.example.json" ]]; then
+if [[ -f "$package_dir/config/update.json" ]]; then
     install -m 640 -o "$run_user" -g "$run_group" \
-        "$package_dir/config/update.example.json" \
-        "$install_dir/config/update.example.json"
+        "$package_dir/config/update.json" \
+        "$install_dir/config/update.json"
 fi
 
 unit_path="/etc/systemd/system/$service_name"

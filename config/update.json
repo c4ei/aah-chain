@@ -1,6 +1,6 @@
 {
-    "enabled": true,
-    "manifest_url": "https://raw.githubusercontent.com/c4ei/ieum-chain/main/download/update-manifest.json",
-    "release_public_key": "1b53691ba18362c0729bfba3de94b1d1a5bb630cd132820f4f85c03944e4a53d",
-    "check_interval_secs": 300
+  "enabled": true,
+  "manifest_url": "https://raw.githubusercontent.com/c4ei/ieum-chain/main/download/update-manifest.json",
+  "release_public_key": "1b53691ba18362c0729bfba3de94b1d1a5bb630cd132820f4f85c03944e4a53d",
+  "check_interval_secs": 300
 }

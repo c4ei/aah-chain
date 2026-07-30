@@ -108,14 +108,33 @@ cd /opt/ieum-chain
 4. 기존 바이너리를 `.previous`로 보존하고 원자적으로 교체
 5. 노드 종료 후 systemd가 재시작
 
+v0.19.9 설치 패키지는 서명에 사용한 공개키가 들어 있는 활성
+`config/update.json`을 자동 설치합니다. 릴리스 생성은 개발 서버에서 실행합니다.
+
 ```bash
-cp config/update.example.json config/update.json
-chmod 640 config/update.json
+cd /home/dev/www/ieum-chain
+chmod 600 backups/release-private.pem
+scripts/make-node-package.sh 0.19.9
+git add Cargo.toml Cargo.lock CHANGELOG.md README.md config/update.json \
+  download scripts docs src
+git commit -m "IEUM v0.19.9 signed release"
+git push
 ```
 
-`manifest_url`과 `release_public_key`는 운영 릴리스 값으로 교체해야 합니다.
+기본 개인키 경로는
+`/home/dev/www/ieum-chain/backups/release-private.pem`입니다. 개인키는
+`.gitignore`의 `/backups` 규칙으로 제외되며 패키지·manifest·Git에 포함되지
+않습니다. 다른 경로를 쓸 때만 `IEUM_RELEASE_PRIVATE_KEY`를 지정합니다.
+
+스크립트는 설치 압축·SHA-256, 업데이트용 무압축 실행파일, 서명된
+`download/update-manifest.json`, 공개키가 고정된 `config/update.json`을
+생성합니다. Git push 후 자동 업데이트가 설정된 노드는 5분 이내 확인합니다.
 P2P의 새 버전 알림은 확인 시점을 앞당기는 힌트일 뿐이며, 알림을 보낸 피어를
 신뢰해 설치하지 않습니다.
+
+v0.19.7처럼 활성 `config/update.json` 없이 설치된 기존 노드는 배포 경로를
+모르므로 v0.19.9 패키지를 최초 한 번 설치해야 합니다. 이후부터는 수동 설치가
+필요하지 않습니다.
 
 검증자 4대 이상은 전부 동시에 자동 업데이트하지 않습니다. 프로토콜 호환
 업데이트는 한 대씩 적용하고 RPC·피어·합의 높이를 확인한 뒤 다음 노드로
@@ -212,4 +231,3 @@ IEUM이 별도 체인이므로 양쪽의 확정을 검증하고 자산을 잠그
 
 현재 단계는 기능 테스트넷/파일럿 운영에 적합하며, 대규모 실자산 운영은 위 항목과
 트래픽 분산·보상 영수증·브리지 감사를 마친 뒤 진행하는 것이 안전합니다.
-

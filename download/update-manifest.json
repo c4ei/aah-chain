@@ -1,0 +1,14 @@
+{
+  "version": "0.19.9",
+  "protocol_version": 2,
+  "mandatory": false,
+  "published_at": 1785401454,
+  "notes": "IEUM Chain v0.19.9 signed release",
+  "artifacts": {
+    "linux-x86_64": {
+      "url": "https://raw.githubusercontent.com/c4ei/ieum-chain/main/download/ieum-chain_linux_x86_64_v0.19.9",
+      "sha256": "154a9e868718fa45e94df0656b905c60d627822b37cfe9df6e57f0c53108c829"
+    }
+  },
+  "signature": "420b5fde6e2601a39f82df48999c6e02a3e73023a3cf5157c949f92f7396d07dbd1fb4d88941ca07a9008667fb360ef30d4a420aa49d0d8408545a0f95e4e90f"
+}
