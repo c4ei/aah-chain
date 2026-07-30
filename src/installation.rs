@@ -7,7 +7,7 @@ const MARKER_NAME: &str = ".ieum-initialized";
 /// 서버 최초 실행에 필요한 서버별 비밀키와 로컬 원장을 준비합니다.
 ///
 /// 초기화 표시가 생긴 뒤 핵심 파일이 사라진 경우에는 새 신원을 자동 생성하지 않습니다.
-/// 키 파일이 유효하게 존재하면 marker보다 실제 키 파일을 신원의 기준으로 사용합니다.
+/// marker와 키 파일의 신원이 다르면 자동 채택하지 않고 실행을 중단합니다.
 pub fn prepare_server_files(
     validator_key: &Path,
     node_key: &Path,
@@ -118,61 +118,12 @@ fn verify_marker_identity(
         );
     }
     if expected_peer != actual_peer {
-        backup_and_update_marker(marker, validator_public_key, &actual_peer)?;
-        println!(
-            "[노드 키 기준 복구] server.node.key의 현재 PeerId를 사용합니다\
-             (이전 기록: {expected_peer}, 현재: {actual_peer})."
-        );
-        println!(
-            "[초기화 기록 갱신] {} (이전 기록 백업: {})",
-            marker.display(),
-            marker_backup_path(marker).display()
-        );
+        return Err(format!(
+            "server.node.key의 PeerId가 최초 초기화 기록과 다릅니다. \
+             자동으로 교체하지 않고 실행을 중단합니다(기록: {expected_peer}, 현재: {actual_peer})."
+        ));
     }
     Ok(())
-}
-
-fn marker_backup_path(marker: &Path) -> PathBuf {
-    marker.with_file_name(format!(
-        "{}.previous",
-        marker
-            .file_name()
-            .and_then(|name| name.to_str())
-            .unwrap_or(MARKER_NAME)
-    ))
-}
-
-fn backup_and_update_marker(
-    marker: &Path,
-    validator_public_key: &str,
-    peer_id: &str,
-) -> Result<(), String> {
-    let backup = marker_backup_path(marker);
-    if !backup.exists() {
-        fs::copy(marker, &backup).map_err(|error| {
-            format!(
-                "기존 초기화 표시 백업 실패({} -> {}): {error}",
-                marker.display(),
-                backup.display()
-            )
-        })?;
-    }
-    let mut options = OpenOptions::new();
-    options.write(true).truncate(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600);
-    }
-    let mut file = options
-        .open(marker)
-        .map_err(|error| format!("초기화 표시 파일 갱신 실패({}): {error}", marker.display()))?;
-    writeln!(
-        file,
-        "version=1\nvalidator_public_key={validator_public_key}\npeer_id={peer_id}"
-    )
-    .and_then(|_| file.sync_all())
-    .map_err(|error| format!("초기화 표시 파일 갱신 실패({}): {error}", marker.display()))
 }
 
 fn marker_value<'a>(contents: &'a str, name: &str) -> Option<&'a str> {
@@ -183,7 +134,7 @@ fn marker_value<'a>(contents: &'a str, name: &str) -> Option<&'a str> {
 
 fn prepare_validators_config(
     path: &Path,
-    local_validator_public_key: &str,
+    _local_validator_public_key: &str,
     allow_insecure_test_keys: bool,
 ) -> Result<(), String> {
     if path.exists() {
@@ -197,15 +148,20 @@ fn prepare_validators_config(
         println!("[개발망 자동 생성] {}", path.display());
         return Ok(());
     }
-    ieum_chain::validator_key::create_validators_config(
-        path,
-        &[local_validator_public_key.to_owned()],
-        100,
-    )?;
-    println!("[제네시스 검증자 자동 등록] {}", path.display());
+    let genesis: ieum_chain::genesis::GenesisConfig =
+        serde_json::from_str(include_str!("../config/genesis.json"))
+            .map_err(|error| format!("번들 제네시스 읽기 실패: {error}"))?;
+    genesis.validate()?;
+    let public_keys = genesis
+        .validators
+        .iter()
+        .map(|validator| validator.id.clone())
+        .collect::<Vec<_>>();
+    ieum_chain::validator_key::create_validators_config(path, &public_keys, 100)?;
+    println!("[제네시스 검증자 설정 복원] {}", path.display());
     println!(
-        "[부트스트랩 모드] 현재 검증자 1명으로 시작합니다. \
-         새 검증자는 등록 검증 후 다음 epoch에 합류합니다."
+        "[신규 노드 모드] 제네시스 검증자 집합으로 동기화를 시작합니다. \
+         로컬 키는 서명 후보로 자동 전송되며 승인 전에는 일반 동기화 노드로 동작합니다."
     );
     Ok(())
 }
@@ -216,6 +172,150 @@ fn testnet_validator_seed(index: u8) -> [u8; 32] {
 
 fn marker_path(ledger_dir: &Path) -> PathBuf {
     ledger_dir.parent().unwrap_or(ledger_dir).join(MARKER_NAME)
+}
+
+/// 기존 서버 신원과 로컬 상태를 자동 백업한 뒤 신규 서버 신원을 만듭니다.
+pub fn initialize_new_server_node(
+    validator_key: &Path,
+    node_key: &Path,
+    ledger_dir: &Path,
+    validators_config: &Path,
+    events_config: &Path,
+    upgrades_config: &Path,
+) -> Result<Option<PathBuf>, String> {
+    let backup =
+        backup_existing_node_state(validator_key, node_key, ledger_dir, validators_config)?;
+    prepare_server_files(
+        validator_key,
+        node_key,
+        ledger_dir,
+        validators_config,
+        events_config,
+        upgrades_config,
+        false,
+    )?;
+    Ok(backup)
+}
+
+fn backup_existing_node_state(
+    validator_key: &Path,
+    node_key: &Path,
+    ledger_dir: &Path,
+    validators_config: &Path,
+) -> Result<Option<PathBuf>, String> {
+    let data_dir = ledger_dir.parent().unwrap_or(ledger_dir);
+    if !data_dir.exists()
+        && !validator_key.exists()
+        && !node_key.exists()
+        && !validators_config.exists()
+    {
+        return Ok(None);
+    }
+
+    let project_root = data_dir.parent().unwrap_or_else(|| Path::new("."));
+    let timestamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|error| format!("백업 시각 생성 실패: {error}"))?
+        .as_secs();
+    let backups_dir = project_root.join("backups");
+    fs::create_dir_all(&backups_dir).map_err(|error| {
+        format!(
+            "신규 노드 백업 상위 폴더 생성 실패({}): {error}",
+            backups_dir.display()
+        )
+    })?;
+    let backup_root = (0..=999)
+        .map(|suffix| {
+            if suffix == 0 {
+                backups_dir.join(format!("node-init-{timestamp}"))
+            } else {
+                backups_dir.join(format!("node-init-{timestamp}-{suffix}"))
+            }
+        })
+        .find(|path| !path.exists())
+        .ok_or("신규 노드 백업 폴더 이름을 만들 수 없습니다.")?;
+    let backup_config = backup_root.join("config");
+    fs::create_dir_all(&backup_config).map_err(|error| {
+        format!(
+            "신규 노드 백업 폴더 생성 실패({}): {error}",
+            backup_root.display()
+        )
+    })?;
+
+    let backup_data = backup_root.join("data");
+    let moved_data = data_dir.exists();
+    if moved_data {
+        fs::rename(data_dir, &backup_data).map_err(|error| {
+            format!(
+                "기존 data 백업 이동 실패({} -> {}): {error}",
+                data_dir.display(),
+                backup_data.display()
+            )
+        })?;
+    }
+
+    if validator_key.exists() {
+        let backup_validator = backup_config.join(
+            validator_key
+                .file_name()
+                .unwrap_or_else(|| std::ffi::OsStr::new("validator.key")),
+        );
+        if let Err(error) = fs::rename(validator_key, &backup_validator) {
+            if moved_data {
+                fs::rename(&backup_data, data_dir).map_err(|rollback_error| {
+                    format!(
+                        "validator.key 백업 이동 실패({error}), data 원상복구도 실패했습니다 \
+                         ({} -> {}): {rollback_error}. 백업 상태를 직접 확인하세요.",
+                        backup_data.display(),
+                        data_dir.display()
+                    )
+                })?;
+            }
+            return Err(format!(
+                "validator.key 백업 이동 실패({} -> {}): {error}. \
+                 data 이동은 원상복구했습니다.",
+                validator_key.display(),
+                backup_validator.display()
+            ));
+        }
+    }
+
+    if validators_config.exists() {
+        let backup_validators = backup_config.join("validators.json");
+        fs::rename(validators_config, &backup_validators).map_err(|error| {
+            format!(
+                "기존 validators.json 백업 이동 실패({} -> {}): {error}. \
+                 신규 초기화를 중단했으므로 백업 상태를 확인하세요.",
+                validators_config.display(),
+                backup_validators.display()
+            )
+        })?;
+    }
+
+    Ok(Some(backup_root))
+}
+
+/// 기존 서버의 두 키와 최초 초기화 marker가 정확히 일치하는지 검사합니다.
+pub fn verify_server_node(
+    validator_key: &Path,
+    node_key: &Path,
+    ledger_dir: &Path,
+) -> Result<(String, String), String> {
+    let marker = marker_path(ledger_dir);
+    require_existing(".ieum-initialized", &marker)?;
+    require_existing("validator.key", validator_key)?;
+    require_existing("server.node.key", node_key)?;
+    if !ledger_dir.is_dir() {
+        return Err(format!(
+            "기존 원장 경로가 없습니다: {}",
+            ledger_dir.display()
+        ));
+    }
+    let validator_public_key = ieum_chain::validator_key::public_key_from_file(validator_key)?;
+    verify_marker_identity(&marker, &validator_public_key, node_key)?;
+    let identity = ieum_chain::node_key::load_or_create_node_key(node_key)?;
+    let peer_id = libp2p::PeerId::from(identity.public()).to_string();
+    Ok((validator_public_key, peer_id))
 }
 
 fn require_existing(name: &str, path: &Path) -> Result<(), String> {
@@ -286,7 +386,7 @@ mod tests {
     }
 
     #[test]
-    fn first_run_creates_single_validator_config_and_starts() {
+    fn first_run_restores_bundled_genesis_validators_and_starts() {
         let root = temp_root("first-run");
         prepare_server_files(
             &root.join("config/validator.key"),
@@ -305,7 +405,7 @@ mod tests {
         assert!(root.join("config/events.json").exists());
         assert!(root.join("config/upgrades.json").exists());
         let config = fs::read_to_string(root.join("config/validators.json")).unwrap();
-        assert_eq!(config.matches("\"id\"").count(), 1);
+        assert_eq!(config.matches("\"id\"").count(), 4);
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -332,7 +432,7 @@ mod tests {
     }
 
     #[test]
-    fn initialized_node_adopts_existing_replaced_node_key() {
+    fn initialized_node_rejects_replaced_node_key() {
         let root = temp_root("replaced-node-key");
         prepare_server_files(
             &root.join("config/validator.key"),
@@ -346,7 +446,7 @@ mod tests {
         .unwrap();
         fs::remove_file(root.join("data/server.node.key")).unwrap();
         ieum_chain::node_key::load_or_create_node_key(root.join("data/server.node.key")).unwrap();
-        prepare_server_files(
+        let error = prepare_server_files(
             &root.join("config/validator.key"),
             &root.join("data/server.node.key"),
             &root.join("data/ledger"),
@@ -355,14 +455,68 @@ mod tests {
             &root.join("config/upgrades.json"),
             false,
         )
+        .unwrap_err();
+        assert!(error.contains("자동으로 교체하지 않고"));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn explicit_new_node_backs_up_copied_state() {
+        let root = temp_root("explicit-new-backup");
+        fs::create_dir_all(root.join("data/ledger")).unwrap();
+        fs::write(root.join("data/ledger/copied.db"), "old").unwrap();
+        fs::create_dir_all(root.join("config")).unwrap();
+        fs::write(root.join("config/validator.key"), "old-key").unwrap();
+        fs::write(
+            root.join("config/validators.json"),
+            "{\"chain_id\":\"21004\",\"validators\":[]}\n",
+        )
         .unwrap();
-        let identity =
-            ieum_chain::node_key::load_or_create_node_key(root.join("data/server.node.key"))
-                .unwrap();
-        let current_peer = libp2p::PeerId::from(identity.public()).to_string();
-        let marker = fs::read_to_string(root.join("data/.ieum-initialized")).unwrap();
-        assert!(marker.contains(&format!("peer_id={current_peer}")));
-        assert!(root.join("data/.ieum-initialized.previous").exists());
+        let backup = initialize_new_server_node(
+            &root.join("config/validator.key"),
+            &root.join("data/server.node.key"),
+            &root.join("data/ledger"),
+            &root.join("config/validators.json"),
+            &root.join("config/events.json"),
+            &root.join("config/upgrades.json"),
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            fs::read_to_string(backup.join("data/ledger/copied.db")).unwrap(),
+            "old"
+        );
+        assert_eq!(
+            fs::read_to_string(backup.join("config/validator.key")).unwrap(),
+            "old-key"
+        );
+        assert!(backup.join("config/validators.json").exists());
+        let validators = fs::read_to_string(root.join("config/validators.json")).unwrap();
+        assert_eq!(validators.matches("\"id\"").count(), 4);
+        assert!(root.join("config/validator.key").exists());
+        assert!(root.join("data/server.node.key").exists());
+        assert!(root.join("data/.ieum-initialized").exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn explicit_new_node_then_verify_succeeds() {
+        let root = temp_root("explicit-new-verify");
+        initialize_new_server_node(
+            &root.join("config/validator.key"),
+            &root.join("data/server.node.key"),
+            &root.join("data/ledger"),
+            &root.join("config/validators.json"),
+            &root.join("config/events.json"),
+            &root.join("config/upgrades.json"),
+        )
+        .unwrap();
+        verify_server_node(
+            &root.join("config/validator.key"),
+            &root.join("data/server.node.key"),
+            &root.join("data/ledger"),
+        )
+        .unwrap();
         fs::remove_dir_all(root).unwrap();
     }
 

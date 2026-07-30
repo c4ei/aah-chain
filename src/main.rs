@@ -16,7 +16,8 @@ use std::time::Duration;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 const DEFAULT_BOOTSTRAP_CONFIG: &str = "config/bootstrap.json";
-const DEFAULT_BOOTSTRAP_PEER: &str = "/dns4/node.ieum.aah.name/udp/7001/quic-v1/p2p/12D3KooWAVRZjnbP8nXp8vD6irYFAXdLJVyczEFWdKLFzKnKDATx";
+// const DEFAULT_BOOTSTRAP_PEER: &str = "/dns4/node.ieum.aah.name/udp/7001/quic-v1/p2p/12D3KooWAVRZjnbP8nXp8vD6irYFAXdLJVyczEFWdKLFzKnKDATx";
+const DEFAULT_BOOTSTRAP_PEER: &str = "/dns4/node.ieum.aah.name/udp/7001/quic-v1/p2p/12D3KooWCngLfRL315jgBHezczSQtgsqjcVqvHMbhmUibkRT7Veb";
 const SERVER_INSTANCE_PORT: u16 = 49_889;
 const CLIENT_INSTANCE_PORT: u16 = 49_890;
 const SUPPORTED_PROTOCOL_VERSION: u32 = 2;
@@ -51,6 +52,23 @@ enum Command {
         #[command(subcommand)]
         command: ValidatorKeyCommand,
     },
+    /// 신규 노드 초기화와 기존 노드 상태 검증을 수행합니다.
+    Node {
+        #[command(subcommand)]
+        command: NodeCommand,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum NodeCommand {
+    /// 기존 상태를 자동 백업하고 완전한 신규 서버 노드를 초기화합니다.
+    Init {
+        /// 기존 노드 복구가 아닌 신규 노드 생성을 명시적으로 확인합니다.
+        #[arg(long, required = true)]
+        new: bool,
+    },
+    /// 기존 서버 노드의 원장, validator.key, server.node.key 일치를 검사합니다.
+    Verify,
 }
 
 #[derive(Debug, Subcommand)]
@@ -193,6 +211,7 @@ async fn main() -> Result<(), String> {
     let args = Args::parse();
     let (mode, mut args, bootstrap_peers, is_client) = match args.command {
         Some(Command::ValidatorKey { command }) => return run_validator_key_command(command),
+        Some(Command::Node { command }) => return run_node_command(command),
         Some(Command::Update {
             manifest_url,
             release_public_key,
@@ -342,23 +361,25 @@ async fn main() -> Result<(), String> {
         )?
         .into()
     };
+    let local_validator_address = local_validator.address();
+    let mut local_is_validator = !is_client
+        && validators
+            .iter()
+            .any(|validator| validator.id == local_validator_address);
     if !is_client {
-        let configured = validators
-            .get(usize::from(args.validator_index) - 1)
-            .ok_or_else(|| {
-                format!(
-                    "validators 설정에 {}번 검증자가 없습니다.",
-                    args.validator_index
-                )
-            })?;
-        if configured.id != local_validator.address() {
-            return Err(format!(
-                "검증자 개인키 공개키가 validators 설정의 {}번 공개키와 일치하지 않습니다.",
-                args.validator_index
-            ));
+        if local_is_validator {
+            log_info!(
+                "[합의 참여] 로컬 검증자 {}가 현재 검증자 집합에 등록되어 있습니다.",
+                local_validator_address
+            );
+        } else {
+            log_info!(
+                "[일반 노드 시작] 로컬 검증자 {}는 아직 등록되지 않았습니다. \
+                 P2P 동기화와 서명 후보 등록은 계속하며 합의 투표에는 참여하지 않습니다.",
+                local_validator_address
+            );
         }
     }
-    let local_validator_address = local_validator.address();
     let local_registration = if is_client {
         None
     } else {
@@ -421,7 +442,7 @@ async fn main() -> Result<(), String> {
 
     loop {
         tokio::select! {
-            _ = registration_tick.tick(), if !is_client && consensus.chain.tip_height() == 0 => {
+            _ = registration_tick.tick(), if !is_client && !local_is_validator => {
                 if let Some(registration) = &local_registration {
                     commands
                         .send(NetworkCommand::PublishValidatorRegistration(registration.clone()))
@@ -437,8 +458,9 @@ async fn main() -> Result<(), String> {
                         .map_err(|error| error.to_string())?;
                 }
                 let timed_out_transactions = consensus.pending_transactions();
-                let consensus_is_active = consensus.phase() != ieum_chain::ConsensusPhase::Propose
-                    || rpc.has_pending_transactions()?;
+                let consensus_is_active = local_is_validator
+                    && (consensus.phase() != ieum_chain::ConsensusPhase::Propose
+                        || rpc.has_pending_transactions()?);
                 if consensus_is_active
                     && consensus.timeout_if_due(std::time::Instant::now())?
                 {
@@ -449,7 +471,7 @@ async fn main() -> Result<(), String> {
                     );
                     io::stdout().flush().map_err(|error| error.to_string())?;
                 }
-                if !is_client {
+                if !is_client && local_is_validator {
                     upgrades.ensure_supported(
                         consensus.chain.tip_height().saturating_add(1),
                         SUPPORTED_PROTOCOL_VERSION,
@@ -518,8 +540,9 @@ async fn main() -> Result<(), String> {
                             log_error!("[검증자 자동 등록 거부] {error}");
                             continue;
                         }
+                        let registration_id = registration.validator_id.clone();
                         let is_new = registrations
-                            .insert(registration.validator_id.clone(), registration)
+                            .insert(registration_id.clone(), registration)
                             .is_none();
                         if is_new {
                             log_info!(
@@ -527,7 +550,9 @@ async fn main() -> Result<(), String> {
                                 registrations.len().min(4)
                             );
                         }
-                        if registrations.len() >= 4 && consensus.chain.tip_height() == 0 {
+                        if registrations.len() >= 4 && consensus.chain.tip_height() == 0
+                            && validators.len() < 4
+                        {
                             let selected: Vec<_> = registrations
                                 .keys()
                                 .take(4)
@@ -542,11 +567,23 @@ async fn main() -> Result<(), String> {
                                 consensus.replace_bootstrap_validators(selected.clone())?;
                                 save_validators(&args.validators_config, &selected)?;
                                 validators = selected;
+                                local_is_validator = validators
+                                    .iter()
+                                    .any(|validator| validator.id == local_validator_address);
                                 println!();
                                 log_info!(
                                     "[BFT 합의 시작] 검증자 4명 자동 등록 완료. 공통 검증자 집합으로 전환했습니다."
                                 );
                             }
+                        } else if !validators
+                            .iter()
+                            .any(|validator| validator.id == registration_id)
+                        {
+                            log_info!(
+                                "[검증자 후보 대기] {} · P2P 접속과 키 소유권 확인 완료. \
+                                 현재 검증자 승인 및 다음 epoch 적용 전까지 합의권을 부여하지 않습니다.",
+                                registration_id
+                            );
                         }
                     }
                     Some(NetworkEvent::TransactionReceived { transaction, .. }) => {
@@ -555,7 +592,7 @@ async fn main() -> Result<(), String> {
                     Some(NetworkEvent::CommunicationReceived { envelope, .. }) => {
                         rpc.receive_communication(envelope, unix_timestamp())?;
                     }
-                    Some(NetworkEvent::ProposalReceived { proposal, .. }) if !is_client => {
+                    Some(NetworkEvent::ProposalReceived { proposal, .. }) if !is_client && local_is_validator => {
                         match consensus.receive_proposal(proposal) {
                             Ok(prevote) => {
                                 commands.send(NetworkCommand::PublishConsensus(prevote.clone())).await.map_err(|e| e.to_string())?;
@@ -568,7 +605,7 @@ async fn main() -> Result<(), String> {
                             Err(error) => log_error!("[BFT 제안 거부] {error}"),
                         }
                     }
-                    Some(NetworkEvent::ConsensusReceived { message, .. }) if !is_client => {
+                    Some(NetworkEvent::ConsensusReceived { message, .. }) if !is_client && local_is_validator => {
                         match consensus.receive_vote(message) {
                             Ok(Some(precommit)) => {
                                 commands.send(NetworkCommand::PublishConsensus(precommit.clone())).await.map_err(|e| e.to_string())?;
@@ -712,6 +749,39 @@ fn run_validator_key_command(command: ValidatorKeyCommand) -> Result<(), String>
         }
     }
     Ok(())
+}
+
+fn run_node_command(command: NodeCommand) -> Result<(), String> {
+    let validator_key = Path::new("config/validator.key");
+    let node_key = Path::new("data/server.node.key");
+    let ledger_dir = Path::new("data/ledger");
+    match command {
+        NodeCommand::Init { new: true } => {
+            let backup = installation::initialize_new_server_node(
+                validator_key,
+                node_key,
+                ledger_dir,
+                Path::new("config/validators.json"),
+                Path::new("config/events.json"),
+                Path::new("config/upgrades.json"),
+            )?;
+            if let Some(path) = backup {
+                println!("[기존 노드 자동 백업] {}", path.display());
+            }
+            println!("신규 노드 초기화가 완료되었습니다. 다음 명령으로 실행하세요:");
+            println!("  ieum-chain server");
+            Ok(())
+        }
+        NodeCommand::Init { new: false } => unreachable!("--new는 필수 옵션입니다."),
+        NodeCommand::Verify => {
+            let (validator_public_key, peer_id) =
+                installation::verify_server_node(validator_key, node_key, ledger_dir)?;
+            println!("[노드 검증 완료] validator 공개키: {validator_public_key}");
+            println!("[노드 검증 완료] PeerId: {peer_id}");
+            println!("원장과 서버 키가 최초 초기화 기록과 일치합니다.");
+            Ok(())
+        }
+    }
 }
 
 #[cfg(test)]

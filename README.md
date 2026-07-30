@@ -1,4 +1,4 @@
-# IEUM Chain v0.19.4 쉬운 실행 안내
+# IEUM Chain v0.19.6 쉬운 실행 안내
 
 IEUM Chain은 Ubuntu와 Windows에서 실행할 수 있는 경량 블록체인 노드입니다.
 첫 노드는 제네시스 상태에서 단독으로 시작할 수 있습니다. 장애 허용 BFT 검증은
@@ -12,9 +12,10 @@ IEUM Chain은 Ubuntu와 Windows에서 실행할 수 있는 경량 블록체인 �
 - P2P는 `UDP 7001`, RPC는 기본적으로 자기 PC만 접근 가능한 `127.0.0.1:8989`를 사용합니다.
 - 네 서버의 `validator.key`, `server.node.key`, `data/ledger`는 서로 달라야 합니다.
 - 처음 실행하면 위 파일과 폴더를 각 서버에서 자동 생성합니다.
-- 최초 실행에서는 로컬 공개키 1개로 `config/validators.json`이 자동 생성됩니다.
-- 네 서버는 서로 연결되면 공개키 소유권 서명을 자동 교환합니다.
-- 제네시스 상태에서 4명이 확인되면 같은 `validators.json`을 만들고 BFT를 자동 시작합니다.
+- `config/validators.json`이 없으면 번들 제네시스의 검증자 4개가 자동 복원됩니다.
+- 신규 서버의 로컬 키가 현재 검증자 집합에 없으면 일반 동기화 노드로 시작합니다.
+- 신규 서버는 P2P 연결 뒤 공개키·PeerId 소유권 서명을 후보 등록 메시지로 자동 전송합니다.
+- 후보는 현재 검증자 승인과 다음 epoch 반영 전까지 합의 투표를 하지 않습니다.
 - 개인키 파일은 메일, 메신저, 클라우드 드라이브로 보내지 마세요.
 
 `--allow-insecure-test-keys`를 사용하는 개발망과 CI는 검증자 설정 4개를 자동
@@ -36,9 +37,9 @@ IEUM Chain은 Ubuntu와 Windows에서 실행할 수 있는 경량 블록체인 �
 `ping node.ieum.aah.name` 성공은 DNS와 ICMP 연결만 확인하며 검증 노드 자격은
 증명하지 못합니다. 최종 자동 등록은 노드가 부트스트랩 서버에 접속한 뒤 임의 nonce에
 서명하고, 서버가 후보의 UDP/QUIC 주소로 역접속하는 challenge 방식으로 진행합니다.
-v0.19.2는 최초 제네시스 검증자 4명의 서명된 등록 메시지 전파와 공통 집합 자동
-반영까지 연결합니다. 운영망의 5번째 이후 후보는 기존 선발 정책과 epoch 변경 절차를
-통과해야 하며, 제네시스 자동 편입과 구분합니다.
+v0.19.6은 신규 노드의 P2P 동기화와 서명 후보 등록을 자동화합니다. 운영망 후보는
+P2P 접속만으로 합의권을 얻지 않으며 기존 선발 정책과 epoch 변경 절차를 통과해야
+합니다.
 
 ## Ubuntu에서 실행
 
@@ -64,12 +65,14 @@ cargo build --release --locked
 config/validator.key
 data/server.node.key
 data/ledger/
+config/validators.json
 config/events.json
 data/.ieum-initialized
 ```
 
-화면에 표시되는 **검증자 공개키**만 기록합니다. 서버는 로컬 검증자 1명으로 즉시
-기동하며, 연결된 검증자가 4명이 되면 공통 설정으로 자동 전환합니다.
+화면에 표시되는 **검증자 공개키**만 기록합니다. 제네시스 검증자 키를 가진 서버는
+합의에 참여하고, 그 외 신규 서버는 원장을 동기화하면서 서명된 후보 등록을 자동으로
+전송합니다.
 
 ## Windows에서 실행
 
@@ -156,6 +159,31 @@ data/server.node.key
 data/ledger/
 data/.ieum-initialized
 ```
+
+## 신규 노드 초기화와 기존 노드 확인
+
+원본 서버의 `data/`를 복사한 경로는 신규 노드가 아닙니다. 완전한 신규 노드는
+명시적으로 초기화합니다.
+
+```bash
+# 완전한 신규 노드
+./target/release/ieum-chain node init --new
+
+# 기존 노드 상태·키 일치 확인
+./target/release/ieum-chain node verify
+
+# 확인 후 실행
+./target/release/ieum-chain server
+```
+
+`node init --new`는 기존 `data/` 전체와 `config/validator.key`를
+`backups/node-init-<UNIX시각>/`으로 자동 백업 이동한 뒤 새 검증자 키, PeerId,
+원장과 초기화 표식을 생성합니다. `config/genesis.json`, `validators.json`,
+이벤트·업그레이드 설정은 네트워크 공통 파일이므로 유지합니다. 백업은 자동 삭제되지
+않습니다.
+
+`node verify`는 `validator.key`, `server.node.key`, 원장,
+`data/.ieum-initialized`의 신원이 모두 일치할 때만 성공합니다.
 
 ## 메시지·화상채팅·원격 도움
 
