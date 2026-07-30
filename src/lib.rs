@@ -30,6 +30,7 @@ pub mod snapshot_scheduler;
 pub mod snapshot_sync;
 pub mod state_store;
 pub mod storage;
+pub mod traffic_rewards;
 pub mod updater;
 pub mod upgrade;
 pub mod validator_key;
@@ -76,6 +77,10 @@ pub use signer::{ExternalSigner, ValidatorSigner};
 pub use snapshot_scheduler::{ChunkAssignment, SnapshotScheduler};
 pub use snapshot_sync::{SnapshotChunk, SnapshotDownload, SnapshotManifest, SyncTip, TipQuorum};
 pub use state_store::{CanonicalState, StateStore};
+pub use traffic_rewards::{
+    ContributionLedger, EligibleNode, LotteryPayment, PeerCandidate, RelayReceipt, RewardPolicy,
+    TrafficPolicy, draw_lottery, select_balanced_peers,
+};
 pub use upgrade::{ProtocolUpgrade, UpgradeSchedule};
 pub use wallet::Wallet;
 

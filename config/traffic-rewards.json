@@ -1,0 +1,20 @@
+{
+  "traffic": {
+    "target_connections": 12,
+    "nearby_slots": 4,
+    "diversity_slots": 4,
+    "low_load_slots": 4,
+    "max_per_country": 3,
+    "max_per_asn": 2,
+    "max_bootstrap_connections": 1,
+    "minimum_uptime_bps": 8000
+  },
+  "reward": {
+    "epoch_seconds": 86400,
+    "pool_fee_bps": 2500,
+    "minimum_distinct_verifiers": 3,
+    "maximum_receipts_per_verifier": 200,
+    "maximum_points_per_node": 10000,
+    "winner_count": 10
+  }
+}
