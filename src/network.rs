@@ -215,7 +215,8 @@ pub enum NetworkEvent {
         remote_ip: Option<String>,
         direction: &'static str,
         connection_id: String,
-        current_connections: usize,
+        unique_peers: usize,
+        peer_connections: usize,
     },
     PeerDisconnected {
         peer_id: PeerId,
@@ -224,7 +225,8 @@ pub enum NetworkEvent {
         direction: &'static str,
         connection_id: String,
         connected_for: Option<Duration>,
-        current_connections: usize,
+        unique_peers: usize,
+        peer_connections: usize,
         cause: Option<String>,
     },
     BlockReceived {
@@ -284,10 +286,11 @@ impl fmt::Display for NetworkEvent {
                 remote_ip,
                 direction,
                 connection_id,
-                current_connections,
+                unique_peers,
+                peer_connections,
             } => write!(
                 formatter,
-                "[P2P 연결]\n  방향: {direction}\n  PeerId: {peer_id}\n  원격 주소: {remote_address}\n  원격 IP: {}\n  연결 ID: {connection_id}\n  현재 연결: {current_connections}",
+                "[P2P 연결]\n  방향: {direction}\n  PeerId: {peer_id}\n  원격 주소: {remote_address}\n  원격 IP: {}\n  연결 ID: {connection_id}\n  고유 연결 피어: {unique_peers}\n  이 피어의 연결: {peer_connections}",
                 remote_ip.as_deref().unwrap_or("확인 불가")
             ),
             Self::PeerDisconnected {
@@ -297,11 +300,12 @@ impl fmt::Display for NetworkEvent {
                 direction,
                 connection_id,
                 connected_for,
-                current_connections,
+                unique_peers,
+                peer_connections,
                 cause,
             } => write!(
                 formatter,
-                "[P2P 종료]\n  방향: {direction}\n  PeerId: {peer_id}\n  원격 주소: {remote_address}\n  원격 IP: {}\n  연결 ID: {connection_id}\n  연결 시간: {}\n  종료 원인: {}\n  현재 연결: {current_connections}",
+                "[P2P 종료]\n  방향: {direction}\n  PeerId: {peer_id}\n  원격 주소: {remote_address}\n  원격 IP: {}\n  연결 ID: {connection_id}\n  연결 시간: {}\n  종료 원인: {}\n  고유 연결 피어: {unique_peers}\n  이 피어의 남은 연결: {peer_connections}",
                 remote_ip.as_deref().unwrap_or("확인 불가"),
                 connected_for
                     .map(format_duration)
@@ -748,7 +752,11 @@ async fn add_bootstrap_address(
         swarm.dial(resolved_address.clone()).map_err(|error| {
             format!("[P2P 접속 시작 실패] 주소: {original_address}, 오류: {error}")
         })?;
-        if peer_id != local_peer_id {
+        if peer_id != local_peer_id
+            && !resolved_address
+                .iter()
+                .any(|protocol| matches!(protocol, Protocol::P2pCircuit))
+        {
             let relay_address = resolved_address.with(Protocol::P2pCircuit);
             match swarm.listen_on(relay_address.clone()) {
                 Ok(_) => crate::log_info!(
@@ -833,7 +841,16 @@ fn publish_to_topic(
         return;
     };
     if let Err(error) = swarm.behaviour_mut().gossipsub.publish(topic, bytes) {
-        crate::logger::write_repeated_error(&format!("P2P 메시지 전파 실패: {error}"));
+        let message = error.to_string();
+        if message.to_ascii_lowercase().contains("no peers subscribed")
+            || message.contains("NoPeersSubscribedToTopic")
+        {
+            crate::logger::write_repeated_info(
+                "[P2P 전파 대기] 연결된 피어의 토픽 가입을 기다립니다.",
+            );
+        } else {
+            crate::logger::write_repeated_error(&format!("P2P 메시지 전파 실패: {error}"));
+        }
     }
 }
 
@@ -922,22 +939,40 @@ async fn handle_swarm_event(
         SwarmEvent::Behaviour(IeumBehaviourEvent::Identify(event)) => {
             if let identify::Event::Received { peer_id, info, .. } = *event {
                 for address in info.listen_addrs {
-                    if !local_network
-                        .accepts_learned_address(&address, same_lan_peers.contains(&peer_id))
-                    {
+                    let Some(address) = normalize_learned_address(&address, peer_id) else {
                         crate::logger::write_repeated_info(&format!(
-                            "[P2P 주소 제외] PeerId: {peer_id} · 주소: {address} · 현재 노드와 같은 LAN이 아니거나 로컬/가상 인터페이스 주소입니다."
+                            "[P2P 주소 제외] PeerId: {peer_id} · 주소: {address} · 중첩되거나 잘못된 릴레이 경로입니다."
                         ));
+                        continue;
+                    };
+                    let resolved_addresses = match resolve_dns4_addresses(&address).await {
+                        Ok(addresses) => addresses,
+                        Err(error) => {
+                            crate::logger::write_repeated_error(&format!(
+                                "[P2P 학습 주소 DNS 변환 실패] PeerId: {peer_id} · 주소: {address} · {error}"
+                            ));
+                            continue;
+                        }
+                    };
+                    for resolved_address in resolved_addresses {
+                        if !local_network.accepts_learned_address(
+                            &resolved_address,
+                            same_lan_peers.contains(&peer_id),
+                        ) {
+                            crate::logger::write_repeated_info(&format!(
+                                "[P2P 주소 제외] PeerId: {peer_id} · 주소: {resolved_address} · 현재 노드와 같은 LAN이 아니거나 로컬/가상 인터페이스 주소입니다."
+                            ));
+                            swarm
+                                .behaviour_mut()
+                                .kademlia
+                                .remove_address(&peer_id, &resolved_address);
+                            continue;
+                        }
                         swarm
                             .behaviour_mut()
                             .kademlia
-                            .remove_address(&peer_id, &address);
-                        continue;
+                            .add_address(&peer_id, resolved_address);
                     }
-                    swarm
-                        .behaviour_mut()
-                        .kademlia
-                        .add_address(&peer_id, address);
                 }
             }
         }
@@ -1094,6 +1129,7 @@ async fn handle_swarm_event(
         } => {
             connected_at.insert(connection_id, Instant::now());
             let remote_address = endpoint.get_remote_address().clone();
+            let unique_peers = swarm.connected_peers().count();
             let _ = event_tx
                 .send(NetworkEvent::PeerConnected {
                     peer_id,
@@ -1101,7 +1137,8 @@ async fn handle_swarm_event(
                     remote_address,
                     direction: connection_direction(&endpoint),
                     connection_id: format!("{connection_id:?}"),
-                    current_connections: num_established.get() as usize,
+                    unique_peers,
+                    peer_connections: num_established.get() as usize,
                 })
                 .await;
         }
@@ -1114,6 +1151,7 @@ async fn handle_swarm_event(
             ..
         } => {
             let remote_address = endpoint.get_remote_address().clone();
+            let unique_peers = swarm.connected_peers().count();
             let connected_for = connected_at
                 .remove(&connection_id)
                 .map(|started| started.elapsed());
@@ -1125,7 +1163,8 @@ async fn handle_swarm_event(
                     direction: connection_direction(&endpoint),
                     connection_id: format!("{connection_id:?}"),
                     connected_for,
-                    current_connections: num_established as usize,
+                    unique_peers,
+                    peer_connections: num_established as usize,
                     cause: cause.map(|error| error.to_string()),
                 })
                 .await;
@@ -1152,6 +1191,43 @@ async fn handle_swarm_event(
         _ => {}
     }
     Ok(())
+}
+
+/// Identify/Kademlia로 학습한 주소에서 목적지 PeerId 중복과 릴레이 재중첩을 제거합니다.
+///
+/// Kademlia에는 대상 PeerId를 별도 인자로 전달하므로 주소 끝의 `/p2p/<대상>`은
+/// 제거합니다. `/p2p-circuit`은 한 번만 허용하여 이미 릴레이된 주소에 또 릴레이
+/// 경로가 붙는 것을 막습니다.
+fn normalize_learned_address(address: &Multiaddr, peer_id: PeerId) -> Option<Multiaddr> {
+    let protocols = address.iter().collect::<Vec<_>>();
+    if protocols
+        .iter()
+        .filter(|protocol| matches!(protocol, Protocol::P2pCircuit))
+        .count()
+        > 1
+    {
+        return None;
+    }
+
+    let mut normalized = Multiaddr::empty();
+    let mut after_circuit = false;
+    for (index, protocol) in protocols.iter().enumerate() {
+        match protocol {
+            Protocol::P2pCircuit => {
+                after_circuit = true;
+                normalized.push(protocol.clone());
+            }
+            Protocol::P2p(found) if *found == peer_id && index + 1 == protocols.len() => {
+                // 대상 PeerId는 Kademlia가 별도로 보관하므로 주소에서는 제거합니다.
+            }
+            Protocol::P2p(_) if after_circuit => {
+                // circuit 뒤에는 대상 PeerId 외의 경로가 오면 안 됩니다.
+                return None;
+            }
+            _ => normalized.push(protocol.clone()),
+        }
+    }
+    (!normalized.is_empty()).then_some(normalized)
 }
 
 fn is_lan_ipv4(ip: Ipv4Addr) -> bool {
@@ -1252,6 +1328,35 @@ mod connection_log_tests {
         assert!(local_network.accepts_learned_address(&lan, true));
         assert!(!local_network.accepts_learned_address(&other_lan, false));
         assert!(local_network.accepts_learned_address(&public, false));
+    }
+
+    #[test]
+    fn removes_destination_peer_from_learned_relay_address() {
+        let relay = PeerId::random();
+        let destination = PeerId::random();
+        let address: Multiaddr = format!(
+            "/ip4/122.35.243.20/udp/7001/quic-v1/p2p/{relay}/p2p-circuit/p2p/{destination}"
+        )
+        .parse()
+        .unwrap();
+        let normalized = normalize_learned_address(&address, destination).unwrap();
+        assert_eq!(
+            normalized.to_string(),
+            format!("/ip4/122.35.243.20/udp/7001/quic-v1/p2p/{relay}/p2p-circuit")
+        );
+    }
+
+    #[test]
+    fn rejects_nested_relay_address() {
+        let relay_a = PeerId::random();
+        let relay_b = PeerId::random();
+        let destination = PeerId::random();
+        let address: Multiaddr = format!(
+            "/ip4/122.35.243.20/udp/7001/quic-v1/p2p/{relay_a}/p2p-circuit/p2p/{relay_b}/p2p-circuit/p2p/{destination}"
+        )
+        .parse()
+        .unwrap();
+        assert!(normalize_learned_address(&address, destination).is_none());
     }
 
     #[test]

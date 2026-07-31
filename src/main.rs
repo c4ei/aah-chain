@@ -22,7 +22,7 @@ const DEFAULT_NETWORK_CONFIG: &str = "config/network.json";
 const DEFAULT_BOOTSTRAP_PEERS: [&str; 3] = [
     "/dns4/node.ieum.aah.name/udp/7001/quic-v1/p2p/12D3KooWGABnBEucGacnREpBieFwspL5q7Aa6RRuj1MtxEYwrPo2",
     "/dns4/node.ieum.aah.name/udp/7002/quic-v1/p2p/12D3KooWFgNUFENiTt9ftxGU97PuRJN2kiayFgwNPDAPmUVB3xgD",
-    "/dns4/node.ieum.aah.name/udp/7003/quic-v1/p2p/12D3KooWQjeX3TQf4LGdFj39EFA4JUtF5bnZk7wxuFdjmZzXGt4L",
+    "/dns4/node.ieum.aah.name/udp/7003/quic-v1/p2p/12D3KooWNCudCpi43r6bBU2gTyLsm18Vn8G7mxDK4XBpNzmCh7zb",
 ];
 const SERVER_INSTANCE_PORT: u16 = 49_889;
 const CLIENT_INSTANCE_PORT: u16 = 49_890;
@@ -727,9 +727,9 @@ async fn main() -> Result<(), String> {
             }
             event = events.recv() => {
                 match event {
-                    Some(NetworkEvent::PeerConnected { peer_id: connected, remote_address, remote_ip, direction, connection_id, current_connections }) => {
-                        rpc.set_peer_count(current_connections)?;
-                        log_info!("{}", NetworkEvent::PeerConnected { peer_id: connected, remote_address, remote_ip, direction, connection_id, current_connections });
+                    Some(NetworkEvent::PeerConnected { peer_id: connected, remote_address, remote_ip, direction, connection_id, unique_peers, peer_connections }) => {
+                        rpc.set_peer_count(unique_peers)?;
+                        log_info!("{}", NetworkEvent::PeerConnected { peer_id: connected, remote_address, remote_ip, direction, connection_id, unique_peers, peer_connections });
                         commands.send(NetworkCommand::RequestSync {
                             from_height: consensus.chain.tip_height() + 1,
                         }).await.map_err(|e| e.to_string())?;
@@ -949,8 +949,8 @@ async fn main() -> Result<(), String> {
                             }).await.map_err(|e| e.to_string())?;
                         }
                     }
-                    Some(NetworkEvent::PeerDisconnected { peer_id, remote_address, remote_ip, direction, connection_id, connected_for, current_connections, cause }) => {
-                        rpc.set_peer_count(current_connections)?;
+                    Some(NetworkEvent::PeerDisconnected { peer_id, remote_address, remote_ip, direction, connection_id, connected_for, unique_peers, peer_connections, cause }) => {
+                        rpc.set_peer_count(unique_peers)?;
                         log_info!("{}", NetworkEvent::PeerDisconnected {
                             peer_id,
                             remote_address,
@@ -958,7 +958,8 @@ async fn main() -> Result<(), String> {
                             direction,
                             connection_id,
                             connected_for,
-                            current_connections,
+                            unique_peers,
+                            peer_connections,
                             cause,
                         });
                     }
