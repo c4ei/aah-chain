@@ -10,7 +10,7 @@ use libp2p::{Multiaddr, multiaddr::Protocol};
 use rand_core::{OsRng, RngCore};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
-use std::fs;
+use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
 use std::net::{IpAddr, Ipv4Addr, TcpListener, TcpStream, UdpSocket};
 use std::path::{Path, PathBuf};
@@ -261,6 +261,10 @@ struct NodeArgs {
     /// 서버/클라이언트가 시작할 때 접속할 추가 P2P 주소
     #[arg(long, help = "/dns4/node.ieum.aah.name/udp/7001/quic-v1/p2p/PeerId")]
     peer: Vec<Multiaddr>,
+
+    /// CI·폐쇄형 개발망에서 내장 운영 bootstrap 접속을 비활성화합니다.
+    #[arg(long, default_value_t = false)]
+    no_default_bootstrap: bool,
 }
 
 #[derive(Debug, ClapArgs)]
@@ -316,7 +320,7 @@ async fn main() -> Result<(), String> {
                 args.node_key = PathBuf::from("data/server.node.key");
             }
             let mut peers = std::mem::take(&mut args.peer);
-            if peers.is_empty() {
+            if peers.is_empty() && !args.no_default_bootstrap {
                 peers = configured_bootstrap_peers()?;
             }
             ("서버", args, peers, false)
@@ -356,6 +360,7 @@ async fn main() -> Result<(), String> {
                 precommit_timeout_ms: 2_000,
                 sync_quorum_peers: 2,
                 peer: Vec::new(),
+                no_default_bootstrap: false,
             };
             let peers = load_bootstrap_peers(Path::new(DEFAULT_BOOTSTRAP_CONFIG), Vec::new())?;
             ("일반 PC", node, peers, true)
@@ -1383,11 +1388,33 @@ fn save_validators(path: &Path, validators: &[Validator]) -> Result<(), String> 
     let mut contents = serde_json::to_string_pretty(&config)
         .map_err(|error| format!("검증자 설정 직렬화 실패: {error}"))?;
     contents.push('\n');
-    let temporary = path.with_extension("json.tmp");
-    fs::write(&temporary, contents)
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("validators.json");
+    let temporary = path.with_file_name(format!(
+        ".{file_name}.{}.{}.tmp",
+        std::process::id(),
+        unix_timestamp_nanos()
+    ));
+    let mut temporary_file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&temporary)
+        .map_err(|error| format!("검증자 임시 설정 생성 실패: {error}"))?;
+    temporary_file
+        .write_all(contents.as_bytes())
+        .and_then(|_| temporary_file.sync_all())
         .map_err(|error| format!("검증자 임시 설정 저장 실패: {error}"))?;
     fs::rename(&temporary, path)
         .map_err(|error| format!("검증자 설정 교체 실패({}): {error}", path.display()))
+}
+
+fn unix_timestamp_nanos() -> u128 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos()
 }
 
 fn multiaddr_peer_id(address: &Multiaddr) -> Option<libp2p::PeerId> {
