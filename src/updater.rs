@@ -68,6 +68,26 @@ impl AutoUpdateConfig {
         decode_fixed::<32>(&config.release_public_key, "릴리스 공개키")?;
         Ok(Some(config))
     }
+
+    /// 설치 위치와 현재 작업 디렉터리가 달라도 자동 업데이트 설정을 찾습니다.
+    /// systemd 설치본은 실행 파일 옆의 `config/update.json`을 우선 신뢰하고,
+    /// 소스에서 직접 실행하는 경우에는 기존 상대 경로를 사용합니다.
+    pub fn discover() -> Result<Option<(PathBuf, Self)>, String> {
+        let mut candidates = Vec::new();
+        if let Ok(executable) = std::env::current_exe()
+            && let Some(directory) = executable.parent()
+        {
+            candidates.push(directory.join("config/update.json"));
+        }
+        candidates.push(PathBuf::from("config/update.json"));
+
+        for path in candidates {
+            if let Some(config) = Self::load_if_enabled(&path)? {
+                return Ok(Some((path, config)));
+            }
+        }
+        Ok(None)
+    }
 }
 
 #[derive(Serialize)]
@@ -164,8 +184,23 @@ pub fn install_if_newer(
 }
 
 fn fetch_manifest(url: &str) -> Result<UpdateManifest, String> {
-    let bytes = download_https(url)?;
+    // GitHub raw/CDN이 push 직후 이전 manifest를 캐시해 반환하지 않도록 매 검사마다
+    // 고유 query를 붙입니다. 서명 검증 대상은 응답 본문이므로 신뢰 경계는 바뀌지 않습니다.
+    let cache_busted = cache_busted_url(url, unix_timestamp_millis());
+    let bytes = download_https(&cache_busted)?;
     serde_json::from_slice(&bytes).map_err(|error| format!("업데이트 manifest JSON 오류: {error}"))
+}
+
+fn cache_busted_url(url: &str, nonce: u128) -> String {
+    let separator = if url.contains('?') { '&' } else { '?' };
+    format!("{url}{separator}ieum_update_check={nonce}")
+}
+
+fn unix_timestamp_millis() -> u128 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis()
 }
 
 fn install_current_platform(manifest: &UpdateManifest) -> Result<(), String> {
@@ -277,6 +312,10 @@ fn download_https(url: &str) -> Result<Vec<u8>, String> {
             "--silent",
             "--show-error",
             "--location",
+            "--header",
+            "Cache-Control: no-cache",
+            "--header",
+            "Pragma: no-cache",
             "--proto",
             "=https",
             "--tlsv1.2",
@@ -326,5 +365,17 @@ mod tests {
         .unwrap();
         assert!(AutoUpdateConfig::load_if_enabled(&path).unwrap().is_none());
         fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn manifest_cache_buster_uses_existing_query_separator() {
+        assert_eq!(
+            super::cache_busted_url("https://example.com/update.json", 123),
+            "https://example.com/update.json?ieum_update_check=123"
+        );
+        assert_eq!(
+            super::cache_busted_url("https://example.com/update.json?ref=main", 123),
+            "https://example.com/update.json?ref=main&ieum_update_check=123"
+        );
     }
 }

@@ -1,16 +1,16 @@
-# IEUM Chain v0.20.1 쉬운 실행 안내
+# IEUM Chain v0.20.2 쉬운 실행 안내
 
 설치, systemd, 백업, 자동 업데이트 등 전체 운영 방법은
 [`docs/USER_MANUAL_0.19.9.md`](docs/USER_MANUAL_0.19.9.md)에 정리되어 있으며,
-v0.20.1 장애 수정 내용은
-[`docs/VERSION_0.20.1.md`](docs/VERSION_0.20.1.md)를 참고하세요.
+v0.20.2 자동 업데이트 수정 내용은
+[`docs/VERSION_0.20.2.md`](docs/VERSION_0.20.2.md)를 참고하세요.
 
 ## Ubuntu 신규 노드 배포본 자동 생성
 
 릴리스 빌드 후 설치 가능한 노드 압축을 한 번에 만듭니다.
 
 ```bash
-scripts/make-node-package.sh 0.20.1
+scripts/make-node-package.sh 0.20.2
 ```
 
 위 명령은 포맷·Clippy·전체 테스트·릴리스 빌드까지 통과한 경우에만 압축을
@@ -19,8 +19,8 @@ scripts/make-node-package.sh 0.20.1
 대상 서버에 직접 복사한 경우:
 
 ```bash
-tar -xJf ieum-chain_node_ubuntu_x86_64_v0.20.1.tar.xz
-cd ieum-chain-node-v0.20.1
+tar -xJf ieum-chain_node_ubuntu_x86_64_v0.20.2.tar.xz
+cd ieum-chain-node-v0.20.2
 sudo ./install.sh
 ```
 
@@ -28,7 +28,7 @@ SSH 키와 sudo 권한이 준비된 서버에는 자동 업로드·설치할 수
 
 ```bash
 scripts/deploy-node-package.sh \
-  download/ieum-chain_node_ubuntu_x86_64_v0.20.1.tar.xz \
+  download/ieum-chain_node_ubuntu_x86_64_v0.20.2.tar.xz \
   dev@192.168.1.148
 ```
 

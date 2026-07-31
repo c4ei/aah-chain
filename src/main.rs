@@ -22,7 +22,6 @@ const DEFAULT_BOOTSTRAP_PEER: &str = "/dns4/node.ieum.aah.name/udp/7001/quic-v1/
 const SERVER_INSTANCE_PORT: u16 = 49_889;
 const CLIENT_INSTANCE_PORT: u16 = 49_890;
 const SUPPORTED_PROTOCOL_VERSION: u32 = 2;
-const AUTO_UPDATE_CONFIG: &str = "config/update.json";
 
 mod installation;
 
@@ -478,14 +477,21 @@ async fn main() -> Result<(), String> {
     let mut consensus_tick = tokio::time::interval(Duration::from_millis(500));
     // 연결 직후에도 별도로 전송하므로 주기 공지는 복구용 저빈도 heartbeat만 사용합니다.
     let mut registration_tick = tokio::time::interval(Duration::from_secs(60));
-    let auto_update =
-        ieum_chain::updater::AutoUpdateConfig::load_if_enabled(Path::new(AUTO_UPDATE_CONFIG))?;
+    let auto_update = ieum_chain::updater::AutoUpdateConfig::discover()?;
+    if let Some((path, config)) = &auto_update {
+        log_info!(
+            "[자동 업데이트 활성] 설정: {} · 확인 주기: {}초 · 시작 즉시 확인",
+            path.display(),
+            config.check_interval_secs
+        );
+    } else {
+        log_info!("[자동 업데이트 비활성] config/update.json을 찾지 못했거나 enabled=false입니다.");
+    }
     let update_interval = auto_update
         .as_ref()
-        .map(|config| config.check_interval_secs)
+        .map(|(_, config)| config.check_interval_secs)
         .unwrap_or(24 * 60 * 60);
     let mut update_tick = tokio::time::interval(Duration::from_secs(update_interval));
-    update_tick.tick().await;
     let mut sync_quorum = TipQuorum::new(args.sync_quorum_peers)?;
 
     log_info!("IEUM {mode} 노드 시작: {peer_id}");
@@ -505,7 +511,8 @@ async fn main() -> Result<(), String> {
     loop {
         tokio::select! {
             _ = update_tick.tick(), if auto_update.is_some() => {
-                let config = auto_update.as_ref().expect("guarded by is_some");
+                let (_, config) = auto_update.as_ref().expect("guarded by is_some");
+                log_info!("[자동 업데이트 확인] 서명된 최신 manifest를 확인합니다.");
                 match ieum_chain::updater::install_if_newer(
                     &config.manifest_url,
                     &config.release_public_key,
@@ -765,7 +772,7 @@ async fn main() -> Result<(), String> {
                         }
                     }
                     Some(NetworkEvent::UpdateAvailableReceived { source, version }) => {
-                        let Some(config) = auto_update.as_ref() else {
+                        let Some((_, config)) = auto_update.as_ref() else {
                             continue;
                         };
                         if !ieum_chain::updater::is_newer(env!("CARGO_PKG_VERSION"), &version)
