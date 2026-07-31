@@ -22,10 +22,14 @@ pub fn generate_key_file(path: &Path) -> Result<String, String> {
 }
 
 pub fn public_key_from_file(path: &Path) -> Result<String, String> {
+    Ok(wallet_from_file(path)?.address())
+}
+
+pub fn wallet_from_file(path: &Path) -> Result<Wallet, String> {
     let text = fs::read_to_string(path)
         .map_err(|error| format!("검증자 키 파일 읽기 실패({}): {error}", path.display()))?;
     let seed = parse_seed(&text)?;
-    Ok(Wallet::from_seed(seed).address())
+    Ok(Wallet::from_seed(seed))
 }
 
 pub fn create_validators_config(

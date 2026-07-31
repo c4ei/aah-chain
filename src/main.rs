@@ -126,6 +126,14 @@ enum NodeCommand {
     },
     /// 기존 서버 노드의 원장, validator.key, server.node.key 일치를 검사합니다.
     Verify,
+    /// 키·원장·네트워크 설정을 점검하고 안전하게 자동 복구합니다.
+    Doctor,
+    /// 서버 신원 키는 보존하고 원장만 백업한 뒤 비워 재동기화합니다.
+    Clean {
+        /// 원장 백업 및 초기화를 명시적으로 확인합니다.
+        #[arg(long, required = true)]
+        yes: bool,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -141,6 +149,20 @@ enum ValidatorKeyCommand {
         /// 읽을 개인키 파일
         #[arg(long, default_value = "config/validator.key")]
         key: PathBuf,
+    },
+    /// 이 검증자 키가 소유한 IEUM을 지정 지갑으로 안전하게 서명 전송합니다.
+    Transfer {
+        #[arg(long)]
+        to: String,
+        /// IEUM 금액 또는 잔액 전체에서 수수료를 뺀 `all`
+        #[arg(long, default_value = "all")]
+        amount: String,
+        #[arg(long, default_value = "0.000001")]
+        fee: String,
+        #[arg(long, default_value = "config/validator.key")]
+        key: PathBuf,
+        #[arg(long, default_value_t = 8989)]
+        rpc_port: u16,
     },
     /// 공개키 4개 이상으로 모든 노드가 공유할 운영 설정을 생성합니다.
     CreateConfig {
@@ -370,7 +392,7 @@ async fn main() -> Result<(), String> {
     let identity_key = load_or_create_node_key(&args.node_key)?;
     let local_peer_id = libp2p::PeerId::from(identity_key.public());
     let reward_node_key = identity_key.clone();
-    let external_addresses = load_network_settings()?
+    let external_addresses = repair_local_advertise_address(local_peer_id)?
         .advertise_address
         .into_iter()
         .map(|address| {
@@ -982,6 +1004,16 @@ fn run_validator_key_command(command: ValidatorKeyCommand) -> Result<(), String>
         ValidatorKeyCommand::Public { key } => {
             println!("{}", ieum_chain::validator_key::public_key_from_file(&key)?);
         }
+        ValidatorKeyCommand::Transfer {
+            to,
+            amount,
+            fee,
+            key,
+            rpc_port,
+        } => {
+            let wallet = ieum_chain::validator_key::wallet_from_file(&key)?;
+            send_wallet_balance(&wallet, to, amount, fee, rpc_port)?;
+        }
         ValidatorKeyCommand::CreateConfig {
             public_keys,
             voting_power,
@@ -1029,6 +1061,34 @@ fn run_node_command(command: NodeCommand) -> Result<(), String> {
             println!("원장과 서버 키가 최초 초기화 기록과 일치합니다.");
             Ok(())
         }
+        NodeCommand::Doctor => {
+            installation::prepare_server_files(
+                validator_key,
+                node_key,
+                ledger_dir,
+                Path::new("config/validators.json"),
+                Path::new("config/events.json"),
+                Path::new("config/upgrades.json"),
+                false,
+            )?;
+            let identity = load_or_create_node_key(node_key)?;
+            let peer_id = libp2p::PeerId::from(identity.public());
+            repair_local_advertise_address(peer_id)?;
+            let validator_public_key =
+                ieum_chain::validator_key::public_key_from_file(validator_key)?;
+            println!("[자동 복구 완료] 검증자 공개키: {validator_public_key}");
+            println!("[자동 복구 완료] PeerId: {peer_id}");
+            println!("이제 `ieum-chain server` 또는 systemd 서비스를 다시 시작하세요.");
+            Ok(())
+        }
+        NodeCommand::Clean { yes: true } => {
+            let backup = installation::clean_ledger_preserving_identity(ledger_dir)?;
+            println!("[원장 안전 백업] {}", backup.display());
+            println!("validator.key와 server.node.key는 보존했습니다.");
+            println!("다음 실행 시 네트워크에서 원장을 자동으로 다시 동기화합니다.");
+            Ok(())
+        }
+        NodeCommand::Clean { yes: false } => unreachable!("--yes는 필수 옵션입니다."),
     }
 }
 
@@ -1135,46 +1195,86 @@ fn run_reward_command(command: RewardCommand) -> Result<(), String> {
             rpc_port,
         } => {
             let wallet = load_or_create_reward_wallet(&key)?;
-            let amount = parse_ieum_amount(&amount)?;
-            let fee = parse_ieum_amount(&fee)?;
-            let nonce_response = rpc_call(
-                rpc_port,
-                serde_json::json!({
-                    "jsonrpc": "2.0",
-                    "id": 1,
-                    "method": "eth_getTransactionCount",
-                    "params": [wallet.address(), "pending"]
-                }),
-            )?;
-            let nonce_text = nonce_response
-                .get("result")
-                .and_then(serde_json::Value::as_str)
-                .ok_or_else(|| format!("nonce 조회 실패: {nonce_response}"))?;
-            let nonce = u64::from_str_radix(nonce_text.trim_start_matches("0x"), 16)
-                .map_err(|_| "RPC nonce 형식이 올바르지 않습니다.".to_string())?;
-            let transaction = wallet.sign_transfer(to, amount, fee, nonce);
-            let response = rpc_call(
-                rpc_port,
-                serde_json::json!({
-                    "jsonrpc": "2.0",
-                    "id": 2,
-                    "method": "ieum_sendSignedTransaction",
-                    "params": [transaction]
-                }),
-            )?;
-            if let Some(error) = response.get("error") {
-                return Err(format!("송금 제출 실패: {error}"));
-            }
-            println!(
-                "송금 제출 완료: {}",
-                response
-                    .get("result")
-                    .and_then(serde_json::Value::as_str)
-                    .unwrap_or("거래 해시 없음")
-            );
-            Ok(())
+            send_wallet_balance(&wallet, to, amount, fee, rpc_port)
         }
     }
+}
+
+fn send_wallet_balance(
+    wallet: &Wallet,
+    to: String,
+    amount: String,
+    fee: String,
+    rpc_port: u16,
+) -> Result<(), String> {
+    let fee = parse_ieum_amount(&fee)?;
+    let balance_response = rpc_call(
+        rpc_port,
+        serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "eth_getBalance",
+            "params": [wallet.address(), "latest"]
+        }),
+    )?;
+    let balance = parse_rpc_quantity(&balance_response, "잔액")?;
+    let amount = if amount.eq_ignore_ascii_case("all") {
+        balance
+            .checked_sub(fee)
+            .ok_or("잔액이 수수료보다 작아 전체 송금을 할 수 없습니다.")?
+    } else {
+        parse_ieum_amount(&amount)?
+    };
+    if amount.checked_add(fee).is_none_or(|total| total > balance) {
+        return Err(format!(
+            "잔액이 부족합니다. 보유: {balance} wei, 송금+수수료: {} wei",
+            amount.saturating_add(fee)
+        ));
+    }
+    let nonce_response = rpc_call(
+        rpc_port,
+        serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "eth_getTransactionCount",
+            "params": [wallet.address(), "pending"]
+        }),
+    )?;
+    let nonce = u64::try_from(parse_rpc_quantity(&nonce_response, "nonce")?)
+        .map_err(|_| "RPC nonce가 u64 범위를 벗어났습니다.".to_string())?;
+    let from = wallet.address();
+    let transaction = wallet.sign_transfer(to.clone(), amount, fee, nonce);
+    let response = rpc_call(
+        rpc_port,
+        serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 3,
+            "method": "ieum_sendSignedTransaction",
+            "params": [transaction]
+        }),
+    )?;
+    if let Some(error) = response.get("error") {
+        return Err(format!("송금 제출 실패: {error}"));
+    }
+    println!("[서명 확인] 기존 검증자 주소: {from}");
+    println!("[송금 대상] {to}");
+    println!(
+        "송금 제출 완료: {}",
+        response
+            .get("result")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("거래 해시 없음")
+    );
+    Ok(())
+}
+
+fn parse_rpc_quantity(response: &serde_json::Value, name: &str) -> Result<u128, String> {
+    let value = response
+        .get("result")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| format!("{name} 조회 실패: {response}"))?;
+    u128::from_str_radix(value.trim_start_matches("0x"), 16)
+        .map_err(|_| format!("RPC {name} 형식이 올바르지 않습니다."))
 }
 
 fn parse_ieum_amount(value: &str) -> Result<u128, String> {
@@ -1472,6 +1572,30 @@ fn ensure_peer_id(
         }
         None => Ok(address),
     }
+}
+
+fn repair_local_advertise_address(
+    local_peer_id: libp2p::PeerId,
+) -> Result<NodeNetworkSettings, String> {
+    let mut settings = load_network_settings()?;
+    let Some(value) = settings.advertise_address.as_deref() else {
+        return Ok(settings);
+    };
+    let mut address: Multiaddr = value
+        .parse()
+        .map_err(|error| format!("공개 광고 주소 형식 오류({value}): {error}"))?;
+    if multiaddr_peer_id(&address).is_some_and(|peer_id| peer_id != local_peer_id) {
+        let _ = address.pop();
+        address.push(Protocol::P2p(local_peer_id));
+        let repaired = address.to_string();
+        log_info!(
+            "[네트워크 자동 복구] server.node.key 변경을 감지해 공개 광고 주소 PeerId를 \
+             현재 값으로 교체했습니다: {repaired}"
+        );
+        settings.advertise_address = Some(repaired);
+        save_network_settings(&settings)?;
+    }
+    Ok(settings)
 }
 
 fn save_network_settings(settings: &NodeNetworkSettings) -> Result<(), String> {

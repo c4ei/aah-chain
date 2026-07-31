@@ -37,9 +37,9 @@ start_node() {
     --allow-insecure-test-keys
     --port "$p2p_port"
     --rpc-port "$rpc_port"
-    --rpc-data-dir "$test_root/node-$index"
-    --node-key "$test_root/node-$index.key"
-    --validator-key "$test_root/validator-$index.key"
+    --rpc-data-dir "$test_root/node-$index/ledger"
+    --node-key "$test_root/node-$index/server.node.key"
+    --validator-key "$test_root/node-$index/validator.key"
     --validators-config "$test_root/validators.json"
     --propose-timeout-ms 1500
     --prevote-timeout-ms 1500

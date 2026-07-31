@@ -22,11 +22,13 @@ pub fn prepare_server_files(
         require_existing("validator.key", validator_key)?;
         require_existing("server.node.key", node_key)?;
         if !ledger_dir.exists() {
-            return Err(format!(
-                "기존 IEUM 설치에서 원장 경로가 없어 실행을 중단합니다: {}. \
-                 백업 원장을 복구해 주세요.",
+            fs::create_dir_all(ledger_dir).map_err(|error| {
+                format!("원장 자동 복구 실패({}): {error}", ledger_dir.display())
+            })?;
+            println!(
+                "[자동 복구] 원장 경로가 없어 다시 만들었습니다: {}",
                 ledger_dir.display()
-            ));
+            );
         }
         let validator_public_key = ieum_chain::validator_key::public_key_from_file(validator_key)?;
         verify_marker_identity(&marker, &validator_public_key, node_key)?;
@@ -96,6 +98,46 @@ pub fn prepare_server_files(
         &validator_public_key,
         allow_insecure_test_keys,
     )
+}
+
+/// 검증자/노드 신원은 그대로 두고 손상되었을 수 있는 원장만 백업합니다.
+/// 백업 폴더로 rename하므로 사용자가 필요하면 되돌릴 수 있습니다.
+pub fn clean_ledger_preserving_identity(ledger_dir: &Path) -> Result<PathBuf, String> {
+    let data_dir = ledger_dir.parent().unwrap_or(ledger_dir);
+    let project_root = data_dir.parent().unwrap_or_else(|| Path::new("."));
+    let backups_dir = project_root.join("backups");
+    fs::create_dir_all(&backups_dir)
+        .map_err(|error| format!("백업 폴더 생성 실패({}): {error}", backups_dir.display()))?;
+    let timestamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|error| format!("백업 시각 생성 실패: {error}"))?
+        .as_secs();
+    let backup = (0..=999)
+        .map(|suffix| {
+            let name = if suffix == 0 {
+                format!("ledger-clean-{timestamp}")
+            } else {
+                format!("ledger-clean-{timestamp}-{suffix}")
+            };
+            backups_dir.join(name)
+        })
+        .find(|path| !path.exists())
+        .ok_or("원장 백업 폴더 이름을 만들 수 없습니다.")?;
+    if ledger_dir.exists() {
+        fs::rename(ledger_dir, &backup).map_err(|error| {
+            format!(
+                "원장 백업 이동 실패({} -> {}): {error}",
+                ledger_dir.display(),
+                backup.display()
+            )
+        })?;
+    } else {
+        fs::create_dir_all(&backup)
+            .map_err(|error| format!("빈 원장 백업 폴더 생성 실패: {error}"))?;
+    }
+    fs::create_dir_all(ledger_dir)
+        .map_err(|error| format!("새 원장 폴더 생성 실패({}): {error}", ledger_dir.display()))?;
+    Ok(backup)
 }
 
 fn verify_marker_identity(
@@ -535,6 +577,33 @@ mod tests {
         .unwrap();
         let config = fs::read_to_string(root.join("config/validators.json")).unwrap();
         assert_eq!(config.matches("\"id\"").count(), 4);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn clean_ledger_preserves_identity_files_and_is_recoverable() {
+        let root = temp_root("clean-ledger");
+        fs::create_dir_all(root.join("data/ledger")).unwrap();
+        fs::create_dir_all(root.join("config")).unwrap();
+        fs::write(root.join("data/ledger/state.db"), "state").unwrap();
+        fs::write(root.join("data/server.node.key"), "node-key").unwrap();
+        fs::write(root.join("config/validator.key"), "validator-key").unwrap();
+
+        let backup = clean_ledger_preserving_identity(&root.join("data/ledger")).unwrap();
+
+        assert_eq!(
+            fs::read_to_string(backup.join("state.db")).unwrap(),
+            "state"
+        );
+        assert!(root.join("data/ledger").is_dir());
+        assert_eq!(
+            fs::read_to_string(root.join("data/server.node.key")).unwrap(),
+            "node-key"
+        );
+        assert_eq!(
+            fs::read_to_string(root.join("config/validator.key")).unwrap(),
+            "validator-key"
+        );
         fs::remove_dir_all(root).unwrap();
     }
 }
