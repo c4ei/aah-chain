@@ -127,6 +127,8 @@ impl ValidatorRegistration {
 pub struct NetworkConfig {
     pub listen_port: u16,
     pub bootstrap_peers: Vec<Multiaddr>,
+    /// NAT 포트포워딩 뒤에서 다른 피어에게 알릴 공개 주소입니다.
+    pub external_addresses: Vec<Multiaddr>,
     pub identity_key: Option<Keypair>,
     pub max_message_bytes: usize,
     pub idle_timeout: Duration,
@@ -138,6 +140,7 @@ impl Default for NetworkConfig {
         Self {
             listen_port: 7001,
             bootstrap_peers: Vec::new(),
+            external_addresses: Vec::new(),
             identity_key: None,
             max_message_bytes: 2 * 1024 * 1024,
             idle_timeout: Duration::from_secs(30),
@@ -575,6 +578,10 @@ impl P2pNode {
             .parse()
             .map_err(|error| format!("리스닝 주소 오류: {error}"))?;
         swarm.listen_on(listen).map_err(|error| error.to_string())?;
+        for address in config.external_addresses {
+            crate::log_info!("[P2P 공개 주소 광고] {address}");
+            swarm.add_external_address(address);
+        }
 
         // 설정에는 /dns4/도메인 주소를 유지하되 QUIC dial 직전에 IPv4로 변환합니다.
         let bootstrap_addresses = config.bootstrap_peers.clone();

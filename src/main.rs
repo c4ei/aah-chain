@@ -18,7 +18,12 @@ use std::time::Duration;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 const DEFAULT_BOOTSTRAP_CONFIG: &str = "config/bootstrap.json";
-const DEFAULT_BOOTSTRAP_PEER: &str = "/dns4/node.ieum.aah.name/udp/7001/quic-v1/p2p/12D3KooWCngLfRL315jgBHezczSQtgsqjcVqvHMbhmUibkRT7Veb";
+const DEFAULT_NETWORK_CONFIG: &str = "config/network.json";
+const DEFAULT_BOOTSTRAP_PEERS: [&str; 3] = [
+    "/dns4/node.ieum.aah.name/udp/7001/quic-v1/p2p/12D3KooWGABnBEucGacnREpBieFwspL5q7Aa6RRuj1MtxEYwrPo2",
+    "/dns4/node.ieum.aah.name/udp/7002/quic-v1/p2p/12D3KooWFgNUFENiTt9ftxGU97PuRJN2kiayFgwNPDAPmUVB3xgD",
+    "/dns4/node.ieum.aah.name/udp/7003/quic-v1/p2p/12D3KooWQjeX3TQf4LGdFj39EFA4JUtF5bnZk7wxuFdjmZzXGt4L",
+];
 const SERVER_INSTANCE_PORT: u16 = 49_889;
 const CLIENT_INSTANCE_PORT: u16 = 49_890;
 const SUPPORTED_PROTOCOL_VERSION: u32 = 2;
@@ -63,6 +68,28 @@ enum Command {
         #[command(subcommand)]
         command: RewardCommand,
     },
+    /// 부트스트랩과 이 서버가 외부에 광고할 공개 주소를 관리합니다.
+    Network {
+        #[command(subcommand)]
+        command: NetworkCommandConfig,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum NetworkCommandConfig {
+    /// 현재 적용되는 네트워크 설정을 표시합니다.
+    Show,
+    /// 지정한 항목만 저장합니다. 생략한 항목은 기존 값을 유지합니다.
+    Set {
+        /// 시작 시 접속할 공개 노드 주소. 여러 개면 옵션을 반복합니다.
+        #[arg(long = "bootstrap")]
+        bootstrap_peers: Vec<Multiaddr>,
+        /// 이 서버의 포트포워딩된 공개 광고 주소.
+        #[arg(long)]
+        advertise_address: Option<Multiaddr>,
+    },
+    /// 사용자 설정을 지우고 내장된 자동 기본값으로 되돌립니다.
+    Reset,
 }
 
 #[derive(Debug, Subcommand)]
@@ -243,6 +270,7 @@ async fn main() -> Result<(), String> {
         Some(Command::ValidatorKey { command }) => return run_validator_key_command(command),
         Some(Command::Reward { command }) => return run_reward_command(command),
         Some(Command::Node { command }) => return run_node_command(command),
+        Some(Command::Network { command }) => return run_network_command(command),
         Some(Command::Update {
             manifest_url,
             release_public_key,
@@ -267,11 +295,7 @@ async fn main() -> Result<(), String> {
             }
             let mut peers = std::mem::take(&mut args.peer);
             if peers.is_empty() {
-                peers.push(
-                    DEFAULT_BOOTSTRAP_PEER
-                        .parse()
-                        .map_err(|error| format!("기본 부트스트랩 주소 오류: {error}"))?,
-                );
+                peers = configured_bootstrap_peers()?;
             }
             ("서버", args, peers, false)
         }
@@ -346,6 +370,16 @@ async fn main() -> Result<(), String> {
     let identity_key = load_or_create_node_key(&args.node_key)?;
     let local_peer_id = libp2p::PeerId::from(identity_key.public());
     let reward_node_key = identity_key.clone();
+    let external_addresses = load_network_settings()?
+        .advertise_address
+        .into_iter()
+        .map(|address| {
+            let parsed = address
+                .parse::<Multiaddr>()
+                .map_err(|error| format!("공개 광고 주소 형식 오류({address}): {error}"))?;
+            ensure_peer_id(parsed, local_peer_id)
+        })
+        .collect::<Result<Vec<_>, _>>()?;
     let bootstrap_peers = bootstrap_peers
         .into_iter()
         .filter(|address| multiaddr_peer_id(address).as_ref() != Some(&local_peer_id))
@@ -353,6 +387,7 @@ async fn main() -> Result<(), String> {
     let config = NetworkConfig {
         listen_port: args.port,
         bootstrap_peers,
+        external_addresses,
         identity_key: Some(identity_key),
         max_message_bytes: args.max_message_bytes,
         // 릴레이 예약과 NAT 뒤 노드의 연결이 유휴 구간에도 유지되도록 한다.
@@ -1375,11 +1410,149 @@ enum BootstrapConfig {
     Object { peers: Vec<String> },
 }
 
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+struct NodeNetworkSettings {
+    #[serde(default)]
+    bootstrap_peers: Vec<String>,
+    #[serde(default)]
+    advertise_address: Option<String>,
+}
+
+fn default_bootstrap_peers() -> Result<Vec<Multiaddr>, String> {
+    DEFAULT_BOOTSTRAP_PEERS
+        .iter()
+        .map(|address| {
+            address
+                .parse()
+                .map_err(|error| format!("내장 부트스트랩 주소 오류({address}): {error}"))
+        })
+        .collect()
+}
+
+fn load_network_settings() -> Result<NodeNetworkSettings, String> {
+    let path = Path::new(DEFAULT_NETWORK_CONFIG);
+    if !path.exists() {
+        return Ok(NodeNetworkSettings::default());
+    }
+    let text = fs::read_to_string(path)
+        .map_err(|error| format!("네트워크 설정 읽기 실패({}): {error}", path.display()))?;
+    serde_json::from_str(&text)
+        .map_err(|error| format!("네트워크 설정 형식 오류({}): {error}", path.display()))
+}
+
+fn configured_bootstrap_peers() -> Result<Vec<Multiaddr>, String> {
+    let settings = load_network_settings()?;
+    if settings.bootstrap_peers.is_empty() {
+        return default_bootstrap_peers();
+    }
+    settings
+        .bootstrap_peers
+        .into_iter()
+        .map(|address| {
+            address
+                .parse()
+                .map_err(|error| format!("부트스트랩 주소 형식 오류({address}): {error}"))
+        })
+        .collect()
+}
+
+fn ensure_peer_id(
+    mut address: Multiaddr,
+    local_peer_id: libp2p::PeerId,
+) -> Result<Multiaddr, String> {
+    match multiaddr_peer_id(&address) {
+        Some(peer_id) if peer_id != local_peer_id => Err(format!(
+            "공개 광고 주소의 PeerId가 현재 server.node.key와 다릅니다: {peer_id} != {local_peer_id}"
+        )),
+        // Swarm은 자신의 PeerId를 Identify 정보에 붙이므로 외부 주소에는 전송 주소만
+        // 등록합니다. 사용자는 검증을 위해 완전한 /p2p/ 주소를 입력할 수 있습니다.
+        Some(_) => {
+            let _ = address.pop();
+            Ok(address)
+        }
+        None => Ok(address),
+    }
+}
+
+fn save_network_settings(settings: &NodeNetworkSettings) -> Result<(), String> {
+    let path = Path::new(DEFAULT_NETWORK_CONFIG);
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|error| format!("설정 폴더 생성 실패({}): {error}", parent.display()))?;
+    }
+    let json = serde_json::to_string_pretty(settings).map_err(|error| error.to_string())?;
+    fs::write(path, format!("{json}\n"))
+        .map_err(|error| format!("네트워크 설정 저장 실패({}): {error}", path.display()))
+}
+
+fn run_network_command(command: NetworkCommandConfig) -> Result<(), String> {
+    match command {
+        NetworkCommandConfig::Show => {
+            let settings = load_network_settings()?;
+            println!("bootstrap:");
+            let peers = if settings.bootstrap_peers.is_empty() {
+                DEFAULT_BOOTSTRAP_PEERS
+                    .iter()
+                    .map(|address| (*address).to_string())
+                    .collect()
+            } else {
+                settings.bootstrap_peers
+            };
+            for peer in peers {
+                println!("  - {peer}");
+            }
+            println!(
+                "advertise_address: {}",
+                settings
+                    .advertise_address
+                    .as_deref()
+                    .unwrap_or("(자동/NAT)")
+            );
+            Ok(())
+        }
+        NetworkCommandConfig::Set {
+            bootstrap_peers,
+            advertise_address,
+        } => {
+            if bootstrap_peers.is_empty() && advertise_address.is_none() {
+                return Err("--bootstrap 또는 --advertise-address 중 하나는 필요합니다.".into());
+            }
+            let mut settings = load_network_settings()?;
+            if !bootstrap_peers.is_empty() {
+                settings.bootstrap_peers = bootstrap_peers
+                    .into_iter()
+                    .map(|address| address.to_string())
+                    .collect();
+            }
+            if let Some(address) = advertise_address {
+                settings.advertise_address = Some(address.to_string());
+            }
+            save_network_settings(&settings)?;
+            println!("네트워크 설정을 저장했습니다: {DEFAULT_NETWORK_CONFIG}");
+            Ok(())
+        }
+        NetworkCommandConfig::Reset => {
+            let path = Path::new(DEFAULT_NETWORK_CONFIG);
+            if path.exists() {
+                fs::remove_file(path).map_err(|error| {
+                    format!("네트워크 설정 삭제 실패({}): {error}", path.display())
+                })?;
+            }
+            println!("내장 네트워크 기본값으로 되돌렸습니다.");
+            Ok(())
+        }
+    }
+}
+
 fn load_bootstrap_peers(
     path: &Path,
     mut command_line_peers: Vec<Multiaddr>,
 ) -> Result<Vec<Multiaddr>, String> {
-    let mut peers = if path.exists() {
+    // 기본 실행은 과거 배포본에 남은 bootstrap.json의 오래된 PeerId에 영향을 받지
+    // 않습니다. config/network.json으로 명시 설정했거나 내장 3개 노드를 사용합니다.
+    let mut peers = if path == Path::new(DEFAULT_BOOTSTRAP_CONFIG) {
+        configured_bootstrap_peers()?
+    } else if path.exists() {
         let text = fs::read_to_string(path)
             .map_err(|error| format!("부트스트랩 설정 읽기 실패({}): {error}", path.display()))?;
         let configured: BootstrapConfig = serde_json::from_str(&text)
@@ -1395,12 +1568,6 @@ fn load_bootstrap_peers(
                     .map_err(|error| format!("부트스트랩 주소 형식 오류({address}): {error}"))
             })
             .collect::<Result<Vec<_>, _>>()?
-    } else if path == Path::new(DEFAULT_BOOTSTRAP_CONFIG) {
-        vec![
-            DEFAULT_BOOTSTRAP_PEER
-                .parse()
-                .map_err(|error| format!("내장 부트스트랩 주소 오류: {error}"))?,
-        ]
     } else if command_line_peers.is_empty() {
         return Err(format!(
             "부트스트랩 설정 파일이 없습니다: {}",
@@ -1427,12 +1594,12 @@ mod tests {
 
     #[test]
     fn bootstrap_config_accepts_address_array() {
-        let json = format!(r#"["{DEFAULT_BOOTSTRAP_PEER}"]"#);
+        let json = format!(r#"["{}"]"#, DEFAULT_BOOTSTRAP_PEERS[0]);
         let config: BootstrapConfig = serde_json::from_str(&json).unwrap();
         match config {
             BootstrapConfig::Addresses(peers) => {
                 assert_eq!(peers.len(), 1);
-                assert_eq!(peers[0], DEFAULT_BOOTSTRAP_PEER);
+                assert_eq!(peers[0], DEFAULT_BOOTSTRAP_PEERS[0]);
             }
             BootstrapConfig::Object { .. } => panic!("배열 형식이어야 합니다."),
         }
@@ -1462,11 +1629,27 @@ mod tests {
 
     #[test]
     fn bootstrap_node_does_not_dial_itself() {
-        let address: Multiaddr = DEFAULT_BOOTSTRAP_PEER.parse().unwrap();
+        let address: Multiaddr = DEFAULT_BOOTSTRAP_PEERS[0].parse().unwrap();
         let peer_id = multiaddr_peer_id(&address).unwrap();
         assert_eq!(
             peer_id.to_string(),
-            DEFAULT_BOOTSTRAP_PEER.rsplit('/').next().unwrap()
+            DEFAULT_BOOTSTRAP_PEERS[0].rsplit('/').next().unwrap()
+        );
+    }
+
+    #[test]
+    fn default_bootstrap_contains_three_public_nodes() {
+        let peers = default_bootstrap_peers().unwrap();
+        assert_eq!(peers.len(), 3);
+        assert!(
+            peers
+                .iter()
+                .any(|peer| peer.to_string().contains("/udp/7002/"))
+        );
+        assert!(
+            peers
+                .iter()
+                .any(|peer| peer.to_string().contains("/udp/7003/"))
         );
     }
 }

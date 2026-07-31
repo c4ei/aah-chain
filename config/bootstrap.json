@@ -1,5 +1,7 @@
 {
   "addresses": [
-    "/dns4/node.ieum.aah.name/udp/7001/quic-v1/p2p/12D3KooWCngLfRL315jgBHezczSQtgsqjcVqvHMbhmUibkRT7Veb"
+    "/dns4/node.ieum.aah.name/udp/7001/quic-v1/p2p/12D3KooWGABnBEucGacnREpBieFwspL5q7Aa6RRuj1MtxEYwrPo2",
+    "/dns4/node.ieum.aah.name/udp/7002/quic-v1/p2p/12D3KooWFgNUFENiTt9ftxGU97PuRJN2kiayFgwNPDAPmUVB3xgD",
+    "/dns4/node.ieum.aah.name/udp/7003/quic-v1/p2p/12D3KooWQjeX3TQf4LGdFj39EFA4JUtF5bnZk7wxuFdjmZzXGt4L"
   ]
 }

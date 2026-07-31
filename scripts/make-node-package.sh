@@ -147,7 +147,7 @@ config = {
     "enabled": True,
     "manifest_url": os.environ["MANIFEST_URL"],
     "release_public_key": os.environ["RELEASE_PUBLIC_KEY"],
-    "check_interval_secs": 300,
+    "check_interval_secs": 21600,
 }
 with open(os.environ["UPDATE_CONFIG"], "w", encoding="utf-8") as file:
     json.dump(config, file, ensure_ascii=False, indent=2)

@@ -42,7 +42,7 @@ pub struct AutoUpdateConfig {
 }
 
 fn default_check_interval_secs() -> u64 {
-    300
+    6 * 60 * 60
 }
 
 impl AutoUpdateConfig {
