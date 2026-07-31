@@ -16,7 +16,7 @@ use libp2p::{
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::fmt;
-use std::net::IpAddr;
+use std::net::{IpAddr, Ipv4Addr};
 use std::time::{Duration, Instant};
 use tokio::net::lookup_host;
 use tokio::sync::mpsc;
@@ -25,6 +25,54 @@ pub const BLOCK_TOPIC: &str = "ieum-chain/blocks/1";
 pub const CONSENSUS_TOPIC: &str = "ieum-chain/consensus/1";
 pub const SYNC_TOPIC: &str = "ieum-chain/sync/2";
 pub const COMMUNICATION_PROTOCOL: &str = "/ieum-chain/communication/1";
+
+#[derive(Clone, Debug, Default)]
+struct LocalNetworkView {
+    public_ipv4: Vec<Ipv4Addr>,
+}
+
+impl LocalNetworkView {
+    fn discover() -> Self {
+        let mut view = Self::default();
+        // connect는 UDP 패킷을 보내지 않고 운영체제 라우팅 표에서 기본 외부 경로에
+        // 사용할 로컬 주소만 선택한다. Docker/VMware/에어포트 보조 인터페이스를
+        // 기본 경로로 오인하지 않으면서 Linux/Windows/macOS에서 동일하게 동작한다.
+        if let Ok(socket) = std::net::UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0))
+            && socket.connect((Ipv4Addr::new(1, 1, 1, 1), 53)).is_ok()
+            && let Ok(std::net::SocketAddr::V4(address)) = socket.local_addr()
+            && is_public_ipv4(*address.ip())
+        {
+            view.public_ipv4.push(*address.ip());
+        }
+        view
+    }
+
+    fn accepts_learned_address(&self, address: &Multiaddr, same_lan_peer: bool) -> bool {
+        address.iter().all(|protocol| match protocol {
+            Protocol::Ip4(ip) => is_public_ipv4(ip) || (same_lan_peer && is_lan_ipv4(ip)),
+            Protocol::Ip6(ip) => !ip.is_loopback() && !ip.is_unspecified(),
+            _ => true,
+        })
+    }
+
+    fn log_summary(&self) {
+        if self.public_ipv4.is_empty() {
+            crate::log_info!(
+                "[네트워크 환경] 로컬 NIC에 공인 IPv4가 없습니다. NAT 내부 노드로 판정하며 AutoNAT 역접속 결과로 외부 접근 가능 여부를 확인합니다."
+            );
+        } else {
+            let addresses = self
+                .public_ipv4
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join(", ");
+            crate::log_info!(
+                "[네트워크 환경] 로컬 NIC 공인 IPv4 감지: {addresses} · 방화벽과 UDP 7001 허용 여부는 AutoNAT으로 추가 확인합니다."
+            );
+        }
+    }
+}
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ValidatorRegistration {
@@ -521,12 +569,15 @@ impl P2pNode {
             .build();
 
         let local_peer_id = *swarm.local_peer_id();
+        let local_network = LocalNetworkView::discover();
+        local_network.log_summary();
         let listen: Multiaddr = format!("/ip4/0.0.0.0/udp/{}/quic-v1", config.listen_port)
             .parse()
             .map_err(|error| format!("리스닝 주소 오류: {error}"))?;
         swarm.listen_on(listen).map_err(|error| error.to_string())?;
 
         // 설정에는 /dns4/도메인 주소를 유지하되 QUIC dial 직전에 IPv4로 변환합니다.
+        let bootstrap_addresses = config.bootstrap_peers.clone();
         for address in config.bootstrap_peers {
             add_bootstrap_address(&mut swarm, address, local_peer_id).await?;
         }
@@ -536,10 +587,25 @@ impl P2pNode {
         let (event_tx, event_rx) = mpsc::channel(256);
         let mut guard = PeerGuard::new(config.ban_duration);
         let mut connected_at: HashMap<ConnectionId, Instant> = HashMap::new();
+        let mut same_lan_peers = HashSet::new();
+        let mut bootstrap_redial_tick = tokio::time::interval(Duration::from_secs(60));
+        bootstrap_redial_tick.tick().await;
 
         tokio::spawn(async move {
             loop {
                 tokio::select! {
+                    _ = bootstrap_redial_tick.tick() => {
+                        if swarm.connected_peers().next().is_none() {
+                            crate::log_info!(
+                                "[P2P 자동 복구] 연결된 피어가 없어 원본 bootstrap DNS 주소로 재접속합니다."
+                            );
+                            for address in &bootstrap_addresses {
+                                if let Err(error) = dial_address(&mut swarm, address.clone()).await {
+                                    crate::logger::write_repeated_error(&error);
+                                }
+                            }
+                        }
+                    }
                     command = command_rx.recv() => {
                         match command {
                             Some(NetworkCommand::PublishBlock(block)) => {
@@ -626,13 +692,18 @@ impl P2pNode {
                         }
                     }
                     event = swarm.select_next_some() => {
+                        let context = SwarmEventContext {
+                            event_tx: &event_tx,
+                            local_network: &local_network,
+                            max_message_bytes,
+                        };
                         if let Err(error) = handle_swarm_event(
                             &mut swarm,
                             event,
-                            &event_tx,
                             &mut guard,
                             &mut connected_at,
-                            max_message_bytes,
+                            &mut same_lan_peers,
+                            context,
                         ).await {
                             crate::log_error!("P2P 이벤트 처리 오류: {error}");
                         }
@@ -759,14 +830,26 @@ fn publish_to_topic(
     }
 }
 
+struct SwarmEventContext<'a> {
+    event_tx: &'a mpsc::Sender<NetworkEvent>,
+    local_network: &'a LocalNetworkView,
+    max_message_bytes: usize,
+}
+
 async fn handle_swarm_event(
     swarm: &mut libp2p::Swarm<IeumBehaviour>,
     event: SwarmEvent<IeumBehaviourEvent>,
-    event_tx: &mpsc::Sender<NetworkEvent>,
     guard: &mut PeerGuard,
     connected_at: &mut HashMap<ConnectionId, Instant>,
-    max_message_bytes: usize,
+    same_lan_peers: &mut HashSet<PeerId>,
+    context: SwarmEventContext<'_>,
 ) -> Result<(), String> {
+    let SwarmEventContext {
+        event_tx,
+        local_network,
+        max_message_bytes,
+    } = context;
+
     match event {
         SwarmEvent::Behaviour(IeumBehaviourEvent::RelayClient(event)) => match *event {
             relay::client::Event::ReservationReqAccepted { relay_peer_id, .. } => crate::log_info!(
@@ -780,9 +863,20 @@ async fn handle_swarm_event(
         SwarmEvent::Behaviour(IeumBehaviourEvent::Dcutr(event)) => {
             crate::log_info!("[NAT 홀 펀칭] {event:?}");
         }
-        SwarmEvent::Behaviour(IeumBehaviourEvent::Autonat(event)) => {
-            crate::log_info!("[NAT 접근성 판정] {event:?}");
-        }
+        SwarmEvent::Behaviour(IeumBehaviourEvent::Autonat(event)) => match *event {
+            autonat::Event::StatusChanged { old, new } => match new {
+                autonat::NatStatus::Public(address) => crate::log_info!(
+                    "[NAT 접근성 판정] 외부 직접 접근 가능 · 확인 주소: {address} · 이전 상태: {old:?}"
+                ),
+                autonat::NatStatus::Private => crate::log_info!(
+                    "[NAT 접근성 판정] 외부 역접속 불가 · NAT/방화벽 내부이거나 판정 서버가 같은 공인 IP에 있습니다. 릴레이 또는 다른 공인 IP의 판정 서버가 필요합니다. · 이전 상태: {old:?}"
+                ),
+                autonat::NatStatus::Unknown => crate::log_info!(
+                    "[NAT 접근성 판정] 아직 확정할 수 없습니다. 서로 다른 공인 IP의 AutoNAT 서버 응답을 기다립니다. · 이전 상태: {old:?}"
+                ),
+            },
+            other => crate::logger::write_repeated_info(&format!("[NAT 접근성 확인 중] {other:?}")),
+        },
         SwarmEvent::Behaviour(IeumBehaviourEvent::Ping(event)) => {
             if let Err(error) = event.result {
                 crate::logger::write_repeated_error(&format!(
@@ -796,9 +890,17 @@ async fn handle_swarm_event(
                 // 다른 로컬 프로세스가 광고한 loopback·Docker bridge 주소는 그 프로세스
                 // 바깥에서 같은 PeerId를 보장하지 않습니다. 이를 Kademlia에 넣으면
                 // 주소의 실제 노드와 예상 PeerId가 달라지는 반복 dial 오류가 발생합니다.
-                if is_process_local_address(&address) {
+                if !local_network.accepts_learned_address(&address, true) {
+                    crate::logger::write_repeated_info(&format!(
+                        "[P2P 주소 제외] PeerId: {peer} · 주소: {address} · 현재 노드와 같은 LAN이 아니거나 로컬/가상 인터페이스 주소입니다."
+                    ));
+                    swarm
+                        .behaviour_mut()
+                        .kademlia
+                        .remove_address(&peer, &address);
                     continue;
                 }
+                same_lan_peers.insert(peer);
                 swarm.behaviour_mut().gossipsub.add_explicit_peer(&peer);
                 swarm.behaviour_mut().kademlia.add_address(&peer, address);
                 let _ = event_tx.send(NetworkEvent::PeerDiscovered(peer)).await;
@@ -807,12 +909,22 @@ async fn handle_swarm_event(
         SwarmEvent::Behaviour(IeumBehaviourEvent::Mdns(mdns::Event::Expired(peers))) => {
             for (peer, _) in peers {
                 swarm.behaviour_mut().gossipsub.remove_explicit_peer(&peer);
+                same_lan_peers.remove(&peer);
             }
         }
         SwarmEvent::Behaviour(IeumBehaviourEvent::Identify(event)) => {
             if let identify::Event::Received { peer_id, info, .. } = *event {
                 for address in info.listen_addrs {
-                    if is_process_local_address(&address) {
+                    if !local_network
+                        .accepts_learned_address(&address, same_lan_peers.contains(&peer_id))
+                    {
+                        crate::logger::write_repeated_info(&format!(
+                            "[P2P 주소 제외] PeerId: {peer_id} · 주소: {address} · 현재 노드와 같은 LAN이 아니거나 로컬/가상 인터페이스 주소입니다."
+                        ));
+                        swarm
+                            .behaviour_mut()
+                            .kademlia
+                            .remove_address(&peer_id, &address);
                         continue;
                     }
                     swarm
@@ -1035,16 +1147,28 @@ async fn handle_swarm_event(
     Ok(())
 }
 
-fn is_process_local_address(address: &Multiaddr) -> bool {
-    address.iter().any(|protocol| match protocol {
-        Protocol::Ip4(ip) => {
-            ip.is_loopback()
-                || ip.is_unspecified()
-                || (ip.octets()[0] == 172 && (16..=31).contains(&ip.octets()[1]))
-        }
-        Protocol::Ip6(ip) => ip.is_loopback() || ip.is_unspecified(),
-        _ => false,
-    })
+fn is_lan_ipv4(ip: Ipv4Addr) -> bool {
+    let [a, b, _, _] = ip.octets();
+    a == 10
+        || (a == 172 && (16..=31).contains(&b))
+        || (a == 192 && b == 168)
+        || (a == 169 && b == 254)
+        || (a == 100 && (64..=127).contains(&b))
+}
+
+fn is_public_ipv4(ip: Ipv4Addr) -> bool {
+    let [a, b, _, _] = ip.octets();
+    !ip.is_loopback()
+        && !ip.is_unspecified()
+        && !ip.is_broadcast()
+        && !ip.is_multicast()
+        && !is_lan_ipv4(ip)
+        && a != 0
+        && a < 224
+        && !(a == 192 && b == 0)
+        && !(a == 198 && (b == 18 || b == 19))
+        && !(a == 198 && b == 51)
+        && !(a == 203 && b == 0)
 }
 
 fn validate_direct_communication(
@@ -1106,13 +1230,29 @@ mod connection_log_tests {
     }
 
     #[test]
-    fn ignores_loopback_and_docker_advertised_addresses() {
+    fn only_accepts_private_addresses_on_the_same_physical_lan() {
+        let local_network = LocalNetworkView {
+            public_ipv4: Vec::new(),
+        };
         let loopback: Multiaddr = "/ip4/127.0.0.1/udp/7001/quic-v1".parse().unwrap();
         let docker: Multiaddr = "/ip4/172.18.0.1/udp/7001/quic-v1".parse().unwrap();
         let lan: Multiaddr = "/ip4/192.168.1.20/udp/7001/quic-v1".parse().unwrap();
-        assert!(is_process_local_address(&loopback));
-        assert!(is_process_local_address(&docker));
-        assert!(!is_process_local_address(&lan));
+        let other_lan: Multiaddr = "/ip4/192.168.153.129/udp/7001/quic-v1".parse().unwrap();
+        let public: Multiaddr = "/ip4/122.35.243.20/udp/7001/quic-v1".parse().unwrap();
+        assert!(!local_network.accepts_learned_address(&loopback, true));
+        assert!(!local_network.accepts_learned_address(&docker, false));
+        assert!(local_network.accepts_learned_address(&docker, true));
+        assert!(local_network.accepts_learned_address(&lan, true));
+        assert!(!local_network.accepts_learned_address(&other_lan, false));
+        assert!(local_network.accepts_learned_address(&public, false));
+    }
+
+    #[test]
+    fn classifies_public_private_and_cgnat_ipv4() {
+        assert!(is_public_ipv4(Ipv4Addr::new(122, 35, 243, 20)));
+        assert!(!is_public_ipv4(Ipv4Addr::new(192, 168, 1, 10)));
+        assert!(!is_public_ipv4(Ipv4Addr::new(100, 64, 1, 10)));
+        assert!(!is_public_ipv4(Ipv4Addr::LOCALHOST));
     }
 
     #[test]

@@ -910,7 +910,7 @@ async fn main() -> Result<(), String> {
                             .map(|value| value.to_string())
                             .unwrap_or_else(|| "확인 불가".into());
                         let guidance = if error.contains("Unexpected peer ID") {
-                            " · 주소의 실제 PeerId가 설정과 다릅니다. bootstrap.json과 운영 server.node.key를 확인하세요."
+                            " · 이 주소는 기대한 PeerId가 아닌 다른 노드입니다. 학습된 로컬/사설 주소는 제거되며, bootstrap 주소에서도 반복되면 bootstrap.json과 운영 server.node.key를 확인하세요."
                         } else {
                             ""
                         };
