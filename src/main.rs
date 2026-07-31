@@ -355,7 +355,8 @@ async fn main() -> Result<(), String> {
         bootstrap_peers,
         identity_key: Some(identity_key),
         max_message_bytes: args.max_message_bytes,
-        idle_timeout: Duration::from_secs(30),
+        // 릴레이 예약과 NAT 뒤 노드의 연결이 유휴 구간에도 유지되도록 한다.
+        idle_timeout: Duration::from_secs(120),
         ban_duration: Duration::from_secs(10 * 60),
     };
     let startup_peers = config.bootstrap_peers.clone();

@@ -48,6 +48,9 @@ fi
 
 if [[ "${IEUM_SKIP_BUILD:-0}" != "1" ]]; then
     cd "$root_dir"
+    # 새 libp2p 기능이 추가된 변경 파일 패키지를 적용한 직후에도 Cargo.lock에
+    # 필요한 전이 의존성을 먼저 추가한 뒤 --locked 검증을 계속할 수 있게 합니다.
+    cargo fetch
     cargo fmt --all --check
     cargo clippy --all-targets --all-features --locked -- -D warnings
     cargo test --all-targets --all-features --locked

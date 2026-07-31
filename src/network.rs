@@ -6,11 +6,11 @@ use crate::snapshot_sync::SyncTip;
 use futures::StreamExt;
 use libp2p::core::ConnectedPoint;
 use libp2p::{
-    Multiaddr, PeerId, StreamProtocol, SwarmBuilder, gossipsub, identify,
+    Multiaddr, PeerId, StreamProtocol, SwarmBuilder, autonat, dcutr, gossipsub, identify,
     identity::Keypair,
     kad, mdns,
     multiaddr::Protocol,
-    request_response,
+    noise, ping, relay, request_response,
     swarm::{ConnectionId, NetworkBehaviour, SwarmEvent},
 };
 use serde::{Deserialize, Serialize};
@@ -349,6 +349,11 @@ impl fmt::Display for NetworkEvent {
 #[derive(NetworkBehaviour)]
 #[behaviour(to_swarm = "IeumBehaviourEvent")]
 struct IeumBehaviour {
+    relay_client: relay::client::Behaviour,
+    relay_server: relay::Behaviour,
+    dcutr: dcutr::Behaviour,
+    autonat: autonat::Behaviour,
+    ping: ping::Behaviour,
     gossipsub: gossipsub::Behaviour,
     mdns: mdns::tokio::Behaviour,
     kademlia: kad::Behaviour<kad::store::MemoryStore>,
@@ -358,6 +363,11 @@ struct IeumBehaviour {
 
 #[derive(Debug)]
 enum IeumBehaviourEvent {
+    RelayClient(Box<relay::client::Event>),
+    RelayServer(Box<relay::Event>),
+    Dcutr(Box<dcutr::Event>),
+    Autonat(Box<autonat::Event>),
+    Ping(ping::Event),
     Gossipsub(gossipsub::Event),
     Mdns(mdns::Event),
     Kademlia(kad::Event),
@@ -365,6 +375,31 @@ enum IeumBehaviourEvent {
     Communication(request_response::Event<CommunicationEnvelope, CommunicationAck>),
 }
 
+impl From<relay::client::Event> for IeumBehaviourEvent {
+    fn from(value: relay::client::Event) -> Self {
+        Self::RelayClient(Box::new(value))
+    }
+}
+impl From<relay::Event> for IeumBehaviourEvent {
+    fn from(value: relay::Event) -> Self {
+        Self::RelayServer(Box::new(value))
+    }
+}
+impl From<dcutr::Event> for IeumBehaviourEvent {
+    fn from(value: dcutr::Event) -> Self {
+        Self::Dcutr(Box::new(value))
+    }
+}
+impl From<autonat::Event> for IeumBehaviourEvent {
+    fn from(value: autonat::Event) -> Self {
+        Self::Autonat(Box::new(value))
+    }
+}
+impl From<ping::Event> for IeumBehaviourEvent {
+    fn from(value: ping::Event) -> Self {
+        Self::Ping(value)
+    }
+}
 impl From<gossipsub::Event> for IeumBehaviourEvent {
     fn from(value: gossipsub::Event) -> Self {
         Self::Gossipsub(value)
@@ -421,8 +456,15 @@ impl P2pNode {
         let mut swarm = SwarmBuilder::with_existing_identity(identity_key)
             .with_tokio()
             .with_quic()
+            .with_relay_client(noise::Config::new, libp2p::yamux::Config::default)
+            .map_err(|error| error.to_string())?
             .with_behaviour(
-                move |key| -> Result<IeumBehaviour, Box<dyn std::error::Error + Send + Sync>> {
+                move |key,
+                      relay_client|
+                      -> Result<
+                    IeumBehaviour,
+                    Box<dyn std::error::Error + Send + Sync>,
+                > {
                     let peer_id = PeerId::from(key.public());
                     let gossip_config = gossipsub::ConfigBuilder::default()
                         .max_transmit_size(max_message_bytes)
@@ -452,7 +494,20 @@ impl P2pNode {
                         request_response::Config::default()
                             .with_request_timeout(Duration::from_secs(10)),
                     );
+                    // 채굴장 내부의 다른 NAT 노드를 공인 판정 서버로 임의 선택하지
+                    // 않고, bootstrap.json에 고정한 공개 노드만 사용합니다.
+                    let autonat_config = autonat::Config {
+                        use_connected: false,
+                        ..Default::default()
+                    };
                     Ok(IeumBehaviour {
+                        relay_client,
+                        relay_server: relay::Behaviour::new(peer_id, relay::Config::default()),
+                        dcutr: dcutr::Behaviour::new(peer_id),
+                        autonat: autonat::Behaviour::new(peer_id, autonat_config),
+                        ping: ping::Behaviour::new(
+                            ping::Config::new().with_interval(Duration::from_secs(20)),
+                        ),
                         gossipsub,
                         mdns,
                         kademlia,
@@ -473,7 +528,7 @@ impl P2pNode {
 
         // 설정에는 /dns4/도메인 주소를 유지하되 QUIC dial 직전에 IPv4로 변환합니다.
         for address in config.bootstrap_peers {
-            add_bootstrap_address(&mut swarm, address).await?;
+            add_bootstrap_address(&mut swarm, address, local_peer_id).await?;
         }
         let _ = swarm.behaviour_mut().kademlia.bootstrap();
 
@@ -593,6 +648,7 @@ impl P2pNode {
 async fn add_bootstrap_address(
     swarm: &mut libp2p::Swarm<IeumBehaviour>,
     address: Multiaddr,
+    local_peer_id: PeerId,
 ) -> Result<(), String> {
     let original_address = address.clone();
     let resolved_addresses = resolve_dns4_addresses(&address).await?;
@@ -605,11 +661,26 @@ async fn add_bootstrap_address(
             .behaviour_mut()
             .kademlia
             .add_address(&peer_id, resolved_address.clone());
+        swarm
+            .behaviour_mut()
+            .autonat
+            .add_server(peer_id, Some(resolved_address.clone()));
         resolved_address.push(Protocol::P2p(peer_id));
         crate::log_info!("[P2P 접속 시도] {original_address} -> {resolved_address}");
-        swarm.dial(resolved_address).map_err(|error| {
+        swarm.dial(resolved_address.clone()).map_err(|error| {
             format!("[P2P 접속 시작 실패] 주소: {original_address}, 오류: {error}")
         })?;
+        if peer_id != local_peer_id {
+            let relay_address = resolved_address.with(Protocol::P2pCircuit);
+            match swarm.listen_on(relay_address.clone()) {
+                Ok(_) => crate::log_info!(
+                    "[NAT 릴레이 예약 시도] {relay_address} · 성공하면 포트 개방 없이 연결을 수신합니다."
+                ),
+                Err(error) => crate::log_error!(
+                    "[NAT 릴레이 예약 시작 실패] 주소: {relay_address}, 오류: {error}"
+                ),
+            }
+        }
     }
     Ok(())
 }
@@ -697,6 +768,29 @@ async fn handle_swarm_event(
     max_message_bytes: usize,
 ) -> Result<(), String> {
     match event {
+        SwarmEvent::Behaviour(IeumBehaviourEvent::RelayClient(event)) => match *event {
+            relay::client::Event::ReservationReqAccepted { relay_peer_id, .. } => crate::log_info!(
+                "[NAT 릴레이 준비 완료] Relay PeerId: {relay_peer_id} · 수동 포트 개방 없이 연결 가능합니다."
+            ),
+            other => crate::logger::write_repeated_info(&format!("[NAT 릴레이 상태] {other:?}")),
+        },
+        SwarmEvent::Behaviour(IeumBehaviourEvent::RelayServer(event)) => {
+            crate::logger::write_repeated_info(&format!("[NAT 릴레이 서버] {event:?}"));
+        }
+        SwarmEvent::Behaviour(IeumBehaviourEvent::Dcutr(event)) => {
+            crate::log_info!("[NAT 홀 펀칭] {event:?}");
+        }
+        SwarmEvent::Behaviour(IeumBehaviourEvent::Autonat(event)) => {
+            crate::log_info!("[NAT 접근성 판정] {event:?}");
+        }
+        SwarmEvent::Behaviour(IeumBehaviourEvent::Ping(event)) => {
+            if let Err(error) = event.result {
+                crate::logger::write_repeated_error(&format!(
+                    "[P2P 연결 상태 확인 실패] PeerId: {}, 오류: {error}",
+                    event.peer
+                ));
+            }
+        }
         SwarmEvent::Behaviour(IeumBehaviourEvent::Mdns(mdns::Event::Discovered(peers))) => {
             for (peer, address) in peers {
                 // 다른 로컬 프로세스가 광고한 loopback·Docker bridge 주소는 그 프로세스

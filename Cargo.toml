@@ -1,6 +1,6 @@
 [package]
 name = "ieum-chain"
-version = "0.20.2"
+version = "0.20.3"
 edition = "2024"
 
 [dependencies]
@@ -20,6 +20,10 @@ libp2p = { version = "0.56", features = [
     "kad",
     "mdns",
     "gossipsub",
+    "autonat",
+    "dcutr",
+    "relay",
+    "ping",
     "noise",
     "request-response",
     "cbor",
