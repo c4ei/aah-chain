@@ -119,3 +119,35 @@ fn timeout_changes_round_without_storing_candidate() {
     assert_eq!(nodes[0].force_timeout_for_test().unwrap(), 1);
     assert_eq!(nodes[0].chain.blocks.len(), 1);
 }
+
+#[test]
+fn proposer_does_not_create_a_second_proposal_after_prevote_started() {
+    let (mut nodes, _) = setup();
+    let proposer_index = (0..nodes.len())
+        .find(|&index| nodes[index].can_make_proposal())
+        .unwrap();
+    let first = Block::new(
+        1,
+        nodes[proposer_index].chain.blocks[0].hash.clone(),
+        1,
+        "validator".into(),
+        vec![],
+    );
+    let proposal = nodes[proposer_index].make_proposal(first).unwrap();
+    nodes[proposer_index].receive_proposal(proposal).unwrap();
+
+    assert!(!nodes[proposer_index].can_make_proposal());
+    let duplicate = Block::new(
+        1,
+        nodes[proposer_index].chain.blocks[0].hash.clone(),
+        2,
+        "validator".into(),
+        vec![],
+    );
+    assert!(
+        nodes[proposer_index]
+            .make_proposal(duplicate)
+            .unwrap_err()
+            .contains("현재 단계")
+    );
+}

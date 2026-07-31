@@ -164,8 +164,15 @@ install -m 755 "$binary" "$package_root/ieum-chain"
 install -m 755 "$root_dir/scripts/install-node-package.sh" "$package_root/install.sh"
 install -m 644 "$root_dir/scripts/ieum-chain.service.in" \
     "$package_root/ieum-chain.service.in"
-install -m 644 "$root_dir/docs/USER_MANUAL_0.19.9.md" \
-    "$package_root/USER_MANUAL.md"
+manual="$root_dir/docs/USER_MANUAL_${version}.md"
+if [[ ! -f "$manual" ]]; then
+    manual="$root_dir/docs/USER_MANUAL_0.19.9.md"
+fi
+install -m 644 "$manual" "$package_root/USER_MANUAL.md"
+if [[ -f "$root_dir/docs/VERSION_${version}.md" ]]; then
+    install -m 644 "$root_dir/docs/VERSION_${version}.md" \
+        "$package_root/RELEASE_NOTES.md"
+fi
 
 for config_name in genesis.json events.json upgrades.json bootstrap.json update.json; do
     if [[ -f "$root_dir/config/$config_name" ]]; then

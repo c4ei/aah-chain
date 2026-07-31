@@ -476,7 +476,8 @@ async fn main() -> Result<(), String> {
         log_info!("[BFT 인증서 복원] {imported}개");
     }
     let mut consensus_tick = tokio::time::interval(Duration::from_millis(500));
-    let mut registration_tick = tokio::time::interval(Duration::from_secs(2));
+    // 연결 직후에도 별도로 전송하므로 주기 공지는 복구용 저빈도 heartbeat만 사용합니다.
+    let mut registration_tick = tokio::time::interval(Duration::from_secs(60));
     let auto_update =
         ieum_chain::updater::AutoUpdateConfig::load_if_enabled(Path::new(AUTO_UPDATE_CONFIG))?;
     let update_interval = auto_update
@@ -610,7 +611,9 @@ async fn main() -> Result<(), String> {
                             },
                         });
                     }
-                    if !pending.is_empty() || !due_events.is_empty() {
+                    if (!pending.is_empty() || !due_events.is_empty())
+                        && consensus.can_make_proposal()
+                    {
                         let previous = consensus.chain.blocks.last().unwrap();
                         let block = ieum_chain::Block::new(
                             previous.height + 1,
@@ -622,7 +625,16 @@ async fn main() -> Result<(), String> {
                         .with_system_events(due_events);
                         match consensus.make_proposal(block) {
                             Ok(proposal) => {
-                                let prevote = consensus.receive_proposal(proposal.clone())?;
+                                let prevote = match consensus.receive_proposal(proposal.clone()) {
+                                    Ok(prevote) => prevote,
+                                    Err(error) => {
+                                        log_error!(
+                                            "[BFT 로컬 제안 보류] 합의 단계가 변경되어 다음 tick에서 재시도합니다: {error}"
+                                        );
+                                        rpc.restore_transactions(pending)?;
+                                        continue;
+                                    }
+                                };
                                 commands.send(NetworkCommand::PublishProposal(proposal)).await.map_err(|e| e.to_string())?;
                                 commands.send(NetworkCommand::PublishConsensus(prevote.clone())).await.map_err(|e| e.to_string())?;
                                 if let Some(precommit) = consensus.receive_vote(prevote)? {

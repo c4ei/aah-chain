@@ -108,6 +108,9 @@ impl ConsensusRuntime {
     }
 
     pub fn make_proposal(&self, block: Block) -> Result<SignedProposal, String> {
+        if self.consensus.phase() != ConsensusPhase::Propose {
+            return Err("현재 단계에서는 새 블록 제안을 만들 수 없습니다.".into());
+        }
         if self.validator.address() != self.consensus.expected_proposer() {
             return Err("이 노드는 현재 라운드 제안자가 아닙니다.".into());
         }
@@ -415,6 +418,12 @@ impl ConsensusRuntime {
 
     pub fn phase(&self) -> ConsensusPhase {
         self.consensus.phase()
+    }
+
+    /// 현재 합의 단계와 제안자 순번이 모두 맞을 때만 로컬 제안을 허용합니다.
+    pub fn can_make_proposal(&self) -> bool {
+        self.consensus.phase() == ConsensusPhase::Propose
+            && self.validator.address() == self.consensus.expected_proposer()
     }
 
     pub fn round(&self) -> u32 {
