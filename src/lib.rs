@@ -23,6 +23,7 @@ pub mod node_key;
 pub mod operations;
 pub mod peer_guard;
 pub mod raw_transaction;
+pub mod recovery;
 pub mod rpc;
 pub mod scheduled_event;
 pub mod signer;
@@ -69,6 +70,7 @@ pub use network::{
 };
 pub use operations::{NodeStorageMode, PruningPolicy, StorageManifest};
 pub use peer_guard::{PeerDecision, PeerGuard};
+pub use recovery::{RecoveryApprovalBasis, RecoveryApprovalResult, evaluate_recovery_approvals};
 pub use rpc::{RpcConfig, RpcNodeHandle, RpcServer};
 pub use scheduled_event::{
     EventPayment, EventSchedule, MAX_CLOCK_DRIFT_SECONDS, ScheduledEvent, ScheduledEventAction,

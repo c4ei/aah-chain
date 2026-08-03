@@ -73,6 +73,17 @@ enum Command {
         #[command(subcommand)]
         command: NetworkCommandConfig,
     },
+    /// 체인 사고 복구 원칙과 안전한 복구 방식을 안내합니다.
+    Recovery {
+        #[command(subcommand)]
+        command: RecoveryCommand,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum RecoveryCommand {
+    /// 거래 단위 복구와 체크포인트 롤백의 사용 기준을 표시합니다.
+    Policy,
 }
 
 #[derive(Debug, Subcommand)]
@@ -297,6 +308,7 @@ async fn main() -> Result<(), String> {
         Some(Command::Reward { command }) => return run_reward_command(command),
         Some(Command::Node { command }) => return run_node_command(command),
         Some(Command::Network { command }) => return run_network_command(command),
+        Some(Command::Recovery { command }) => return run_recovery_command(command),
         Some(Command::Update {
             manifest_url,
             release_public_key,
@@ -994,6 +1006,22 @@ async fn main() -> Result<(), String> {
                 rpc_task.abort();
                 break;
             }
+        }
+    }
+    Ok(())
+}
+
+fn run_recovery_command(command: RecoveryCommand) -> Result<(), String> {
+    match command {
+        RecoveryCommand::Policy => {
+            println!("[IEUM Chain 사고 복구 원칙]");
+            println!("거래 단위 복구: 해킹·오발행처럼 영향 거래가 명확할 때 사용");
+            println!("체크포인트 롤백: 원장 전체가 손상되거나 합의 버그가 발생했을 때만 사용");
+            println!("승인 조건: 등록 검증자 수 3/4 이상 또는 전체 투표권 3/4 이상");
+            println!();
+            println!("확정된 거래나 블록을 직접 삭제하지 마세요.");
+            println!("거래 단위 복구는 원본 이력을 보존한 승인된 보상 기록으로 처리합니다.");
+            println!("체크포인트 롤백은 서비스 중지, 전체 백업, 검증자 합의 후에만 수행합니다.");
         }
     }
     Ok(())
