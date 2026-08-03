@@ -70,7 +70,10 @@ pub use network::{
 };
 pub use operations::{NodeStorageMode, PruningPolicy, StorageManifest};
 pub use peer_guard::{PeerDecision, PeerGuard};
-pub use recovery::{RecoveryApprovalBasis, RecoveryApprovalResult, evaluate_recovery_approvals};
+pub use recovery::{
+    RecoveryApprovalBasis, RecoveryApprovalResult, evaluate_checkpoint_recovery_approvals,
+    evaluate_recovery_approvals,
+};
 pub use rpc::{RpcConfig, RpcNodeHandle, RpcServer};
 pub use scheduled_event::{
     EventPayment, EventSchedule, MAX_CLOCK_DRIFT_SECONDS, ScheduledEvent, ScheduledEventAction,

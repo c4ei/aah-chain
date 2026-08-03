@@ -11,6 +11,7 @@ pub const RECOVERY_QUORUM_DENOMINATOR: u128 = 4;
 pub enum RecoveryApprovalBasis {
     ValidatorCount,
     VotingPower,
+    Both,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -81,6 +82,26 @@ pub fn evaluate_recovery_approvals(
     })
 }
 
+/// 체크포인트 롤백과 총공급량 변경은 검증자 수와 투표권 모두 3/4 이상이어야 합니다.
+/// 한 검증자가 투표권 75%를 보유해도 단독으로 전체 체인을 되돌릴 수 없습니다.
+pub fn evaluate_checkpoint_recovery_approvals(
+    validators: &[Validator],
+    approval_ids: impl IntoIterator<Item = String>,
+) -> Result<RecoveryApprovalResult, String> {
+    let mut result = evaluate_recovery_approvals(validators, approval_ids)?;
+    let count_passed = reaches_three_quarters(
+        result.approved_validators as u128,
+        result.total_validators as u128,
+    );
+    let power_passed = reaches_three_quarters(
+        result.approved_voting_power as u128,
+        result.total_voting_power as u128,
+    );
+    result.approved = count_passed && power_passed;
+    result.basis = result.approved.then_some(RecoveryApprovalBasis::Both);
+    Ok(result)
+}
+
 fn reaches_three_quarters(approved: u128, total: u128) -> bool {
     total > 0
         && approved.saturating_mul(RECOVERY_QUORUM_DENOMINATOR)
@@ -139,5 +160,23 @@ mod tests {
             evaluate_recovery_approvals(&validators(&[25, 25, 25, 25]), ["attacker".to_string()],)
                 .is_err()
         );
+    }
+
+    #[test]
+    fn checkpoint_requires_count_and_voting_power_quorum() {
+        let result = evaluate_checkpoint_recovery_approvals(
+            &validators(&[80, 10, 5, 5]),
+            ["validator-0".to_string()],
+        )
+        .unwrap();
+        assert!(!result.approved);
+
+        let result = evaluate_checkpoint_recovery_approvals(
+            &validators(&[80, 10, 5, 5]),
+            [0, 1, 2].map(|index| format!("validator-{index}")),
+        )
+        .unwrap();
+        assert!(result.approved);
+        assert_eq!(result.basis, Some(RecoveryApprovalBasis::Both));
     }
 }

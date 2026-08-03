@@ -11,6 +11,9 @@ use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+const PROTOCOL_VERSION: &str = "2";
+const MIN_COMPATIBLE_PROTOCOL_VERSION: &str = "2";
+
 /// geth/web3 도구가 접속할 HTTP JSON-RPC 설정입니다.
 #[derive(Clone, Debug)]
 pub struct RpcConfig {
@@ -53,6 +56,7 @@ struct RpcState {
     communication_inbox: CommunicationInbox,
     communication_outbox: CommunicationInbox,
     communication_rpc_enabled: bool,
+    data_dir: PathBuf,
 }
 
 /// 기존 geth 스크립트에서 자주 쓰는 계정·잔액·송금 API를 제공하는 호환 계층입니다.
@@ -285,6 +289,7 @@ impl RpcServer {
                 communication_inbox: CommunicationInbox::default(),
                 communication_outbox: CommunicationInbox::default(),
                 communication_rpc_enabled: config.listen_ip.is_loopback(),
+                data_dir: config.data_dir.clone(),
             })),
             config,
         }
@@ -379,7 +384,8 @@ fn dispatch(
             "net": "1.0",
             "personal": "1.0",
             "web3": "1.0",
-            "ieumCommunication": "1.0"
+            "ieumCommunication": "1.0",
+            "ieum": "1.0"
         })),
         "eth_chainId" => {
             let state = read_state(state)?;
@@ -626,6 +632,65 @@ fn dispatch(
                 "uptimeSeconds": state.started_at.elapsed().as_secs()
             }))
         }
+        "ieum_syncStatus" => {
+            let state = read_state(state)?;
+            let progress = if state.sync_highest == 0 {
+                100.0
+            } else {
+                (state.sync_current as f64 / state.sync_highest as f64 * 100.0).min(100.0)
+            };
+            Ok(json!({
+                "syncing": state.sync_active,
+                "currentHeight": state.sync_current,
+                "highestHeight": state.sync_highest,
+                "progressPercent": progress,
+                "readyForTransactions": !state.sync_active && state.sync_current >= state.sync_highest
+            }))
+        }
+        "ieum_finalizedBlock" => {
+            let state = read_state(state)?;
+            let block = state.chain.blocks.last();
+            Ok(block
+                .map(|block| {
+                    json!({
+                        "height": block.height,
+                        "hash": format!("0x{}", block.hash),
+                        "stateRoot": format!("0x{}", state.chain.state_hash()),
+                        "transactionCount": block.transactions.len()
+                    })
+                })
+                .unwrap_or_else(|| {
+                    json!({
+                        "height": 0,
+                        "hash": format!("0x{}", state.chain.tip_hash()),
+                        "stateRoot": format!("0x{}", state.chain.state_hash()),
+                        "transactionCount": 0
+                    })
+                }))
+        }
+        "ieum_networkIdentity" => {
+            let state = read_state(state)?;
+            let genesis_hash = &state.chain.genesis_commitment;
+            Ok(json!({
+                "chainId": state.chain_id,
+                "genesisHash": format!("0x{genesis_hash}"),
+                "protocolVersion": PROTOCOL_VERSION
+            }))
+        }
+        "ieum_protocolVersion" => Ok(json!({
+            "nodeVersion": env!("CARGO_PKG_VERSION"),
+            "protocolVersion": PROTOCOL_VERSION,
+            "minimumCompatibleProtocolVersion": MIN_COMPATIBLE_PROTOCOL_VERSION
+        })),
+        "ieum_recoveryStatus" => {
+            let state = read_state(state)?;
+            recovery_status(&state)
+        }
+        "ieum_getRecoveryByTransaction" => {
+            let transaction_hash = string_param(params, 0)?;
+            let state = read_state(state)?;
+            recovery_by_transaction(&state, transaction_hash)
+        }
         "ieum_sendCommunication" => {
             if !read_state(state)?.communication_rpc_enabled {
                 return Err((
@@ -694,6 +759,59 @@ fn send_raw_transaction(
         .add(transaction)
         .map_err(|message| (-32000, message))?;
     Ok(json!(transaction_hash))
+}
+
+fn recovery_records(state: &RpcState) -> Result<Vec<Value>, (i64, String)> {
+    let path = state.data_dir.join("recovery").join("records.json");
+    if !path.exists() {
+        return Ok(Vec::new());
+    }
+    let bytes = std::fs::read(&path)
+        .map_err(|error| (-32603, format!("복구 기록을 읽지 못했습니다: {error}")))?;
+    serde_json::from_slice::<Vec<Value>>(&bytes)
+        .map_err(|error| (-32603, format!("복구 기록 형식이 손상되었습니다: {error}")))
+}
+
+fn recovery_status(state: &RpcState) -> Result<Value, (i64, String)> {
+    let records = recovery_records(state)?;
+    let pending = records
+        .iter()
+        .filter(|record| record.get("status").and_then(Value::as_str) == Some("pending"))
+        .count();
+    let applied = records
+        .iter()
+        .filter(|record| record.get("status").and_then(Value::as_str) == Some("applied"))
+        .count();
+    Ok(json!({
+        "active": pending > 0,
+        "pendingPlans": pending,
+        "appliedRecords": applied,
+        "latest": records.last().cloned().unwrap_or(Value::Null)
+    }))
+}
+
+fn recovery_by_transaction(
+    state: &RpcState,
+    transaction_hash: &str,
+) -> Result<Value, (i64, String)> {
+    let normalized = transaction_hash
+        .trim_start_matches("0x")
+        .to_ascii_lowercase();
+    if normalized.len() != 64 || !normalized.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err((-32602, "거래 해시는 32바이트 16진수여야 합니다.".into()));
+    }
+    let record = recovery_records(state)?.into_iter().find(|record| {
+        record
+            .get("transactionHash")
+            .and_then(Value::as_str)
+            .map(|value| {
+                value
+                    .trim_start_matches("0x")
+                    .eq_ignore_ascii_case(&normalized)
+            })
+            .unwrap_or(false)
+    });
+    Ok(record.unwrap_or(Value::Null))
 }
 
 fn send_transaction(
@@ -960,5 +1078,18 @@ mod tests {
         )
         .unwrap();
         assert_eq!(address, json!("0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266"));
+    }
+
+    #[test]
+    fn operational_status_methods_are_available() {
+        let shared = RpcServer::new(test_rpc_config("operational-status-methods")).state;
+        let identity = dispatch(&shared, "ieum_networkIdentity", &[]).unwrap();
+        assert_eq!(identity["chainId"], 21004);
+        assert!(identity["genesisHash"].as_str().unwrap().starts_with("0x"));
+
+        let sync = dispatch(&shared, "ieum_syncStatus", &[]).unwrap();
+        assert_eq!(sync["readyForTransactions"], true);
+        let recovery = dispatch(&shared, "ieum_recoveryStatus", &[]).unwrap();
+        assert_eq!(recovery["active"], false);
     }
 }

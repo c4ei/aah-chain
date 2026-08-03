@@ -171,6 +171,17 @@ manual="$root_dir/docs/USER_MANUAL_${version}.md"
 if [[ ! -f "$manual" ]]; then
     manual="$root_dir/docs/USER_MANUAL_0.19.9.md"
 fi
+if [[ ! -f "$manual" ]]; then
+    manual="$root_dir/README.md"
+fi
+[[ -f "$manual" ]] || {
+    echo "패키지에 포함할 사용자 설명서가 없습니다." >&2
+    echo "확인한 경로:" >&2
+    echo "  $root_dir/docs/USER_MANUAL_${version}.md" >&2
+    echo "  $root_dir/docs/USER_MANUAL_0.19.9.md" >&2
+    echo "  $root_dir/README.md" >&2
+    exit 1
+}
 install -m 644 "$manual" "$package_root/USER_MANUAL.md"
 if [[ -f "$root_dir/docs/VERSION_${version}.md" ]]; then
     install -m 644 "$root_dir/docs/VERSION_${version}.md" \
