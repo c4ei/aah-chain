@@ -1,10 +1,10 @@
 use clap::{Args as ClapArgs, Parser, Subcommand};
 use ieum_chain::{
     ConsensusRuntime, ConsensusTimeouts, EventSchedule, EvidenceStore, ExternalSigner,
-    FinalityStore, NetworkCommand, NetworkConfig, NetworkEvent, NodeRewardRegistration, P2pNode,
-    RpcConfig, RpcServer, ScheduledEvent, ScheduledEventAction, SyncTip, TipQuorum,
-    UpgradeSchedule, Validator, ValidatorRegistration, ValidatorSigner, Wallet, log_error,
-    log_info, logger::init_server_log, node_key::load_or_create_node_key,
+    FinalityStore, GenesisConfig, NetworkCommand, NetworkConfig, NetworkEvent,
+    NodeRewardRegistration, P2pNode, RpcConfig, RpcServer, ScheduledEvent, ScheduledEventAction,
+    SyncTip, TipQuorum, UpgradeSchedule, Validator, ValidatorRegistration, ValidatorSigner, Wallet,
+    log_error, log_info, logger::init_server_log, node_key::load_or_create_node_key,
 };
 use libp2p::{Multiaddr, multiaddr::Protocol};
 use rand_core::{OsRng, RngCore};
@@ -436,10 +436,14 @@ async fn main() -> Result<(), String> {
     let startup_peers = config.bootstrap_peers.clone();
     let (peer_id, commands, mut events) = P2pNode::new(config).run().await?;
 
+    let genesis: GenesisConfig = serde_json::from_str(include_str!("../config/genesis.json"))
+        .map_err(|error| format!("운영망 제네시스 설정 오류: {error}"))?;
+    genesis.validate()?;
     let rpc_config = RpcConfig {
         listen_ip: args.rpc_host,
         port: args.rpc_port,
         data_dir: args.rpc_data_dir.clone(),
+        genesis: Some(genesis),
         ..RpcConfig::default()
     };
     let rpc_server = RpcServer::new(rpc_config);
