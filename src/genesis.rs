@@ -63,7 +63,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn bundled_genesis_supports_eighty_thousand_ieum() {
+    fn bundled_genesis_includes_transfer_test_balance() {
         let genesis: GenesisConfig =
             serde_json::from_str(include_str!("../config/genesis.json")).unwrap();
         genesis.validate().unwrap();
@@ -72,6 +72,10 @@ mod tests {
             .iter()
             .map(|(_, value)| *value)
             .sum();
-        assert_eq!(total, 80_000u128 * 10u128.pow(18));
+        assert_eq!(total, 80_100u128 * 10u128.pow(18));
+        assert!(genesis.initial_balances.iter().any(|(address, balance)| {
+            address.eq_ignore_ascii_case("0x475e2f4e40Dbd34370e4fce61ddFF5Ff1F2eA817")
+                && *balance == 100u128 * 10u128.pow(18)
+        }));
     }
 }

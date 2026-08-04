@@ -27,7 +27,7 @@ dirs=(/opt/ieum-chain /opt/ieum-node1 /opt/ieum-node2 /opt/ieum-node3)
 services=(ieum-chain ieum-node1 ieum-node2 ieum-node3)
 p2p_ports=(7001 7002 7003 7004)
 rpc_ports=(8989 8990 8991 8992)
-node_keys=(data/server.node.key data/node.key data/node.key data/node.key)
+node_keys=(data/server.node.key data/server.node.key data/server.node.key data/server.node.key)
 declare -a peer_ids
 
 source_binary="${IEUM_SOURCE_BINARY:-/opt/ieum-chain/ieum-chain}"
@@ -38,7 +38,12 @@ fi
 
 for index in 0 1 2 3; do
     dir="${dirs[$index]}"
-    for required in config/validator.key config/validators.json config/events.json; do
+    for required in \
+        config/validator.key \
+        config/validators.json \
+        config/events.json \
+        "${node_keys[$index]}"
+    do
         if [[ ! -f "$dir/$required" ]]; then
             echo "필수 운영 파일이 없습니다: $dir/$required" >&2
             exit 1
@@ -79,6 +84,10 @@ for index in 0 1 2 3; do
         runuser -u "$run_user" -- \
             "$dir/ieum-chain" node peer-id --key "${node_keys[$index]}"
     )"
+    if [[ ! "${peer_ids[$index]}" =~ ^12D3KooW[1-9A-HJ-NP-Za-km-z]+$ ]]; then
+        echo "PeerId 계산 결과가 올바르지 않습니다: $dir/${node_keys[$index]}" >&2
+        exit 1
+    fi
 done
 
 for index in 0 1 2 3; do

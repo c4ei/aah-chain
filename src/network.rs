@@ -890,10 +890,10 @@ async fn handle_swarm_event(
         SwarmEvent::Behaviour(IeumBehaviourEvent::Autonat(event)) => match *event {
             autonat::Event::StatusChanged { old, new } => match new {
                 autonat::NatStatus::Public(address) => crate::log_info!(
-                    "[NAT 접근성 판정] 외부 직접 접근 가능 · 확인 주소: {address} · 이전 상태: {old:?}"
+                    "[자동 역할 판정] 공개 네트워크 지원 가능 · 외부 직접 접근 주소: {address} · 이전 상태: {old:?}"
                 ),
                 autonat::NatStatus::Private => crate::log_info!(
-                    "[NAT 접근성 판정] 외부 역접속 불가 · NAT/방화벽 내부이거나 판정 서버가 같은 공인 IP에 있습니다. 릴레이 또는 다른 공인 IP의 판정 서버가 필요합니다. · 이전 상태: {old:?}"
+                    "[자동 역할 판정] 일반 클라이언트 유지 · 외부 역접속 불가 · NAT/방화벽 내부이거나 판정 서버가 같은 공인 IP에 있습니다. 릴레이 또는 다른 공인 IP의 판정 서버가 필요합니다. · 이전 상태: {old:?}"
                 ),
                 autonat::NatStatus::Unknown => crate::log_info!(
                     "[NAT 접근성 판정] 아직 확정할 수 없습니다. 서로 다른 공인 IP의 AutoNAT 서버 응답을 기다립니다. · 이전 상태: {old:?}"

@@ -92,8 +92,21 @@ source "$HOME/.cargo/env"
 
 ```bash
 cargo build --release --locked
-./target/release/ieum-chain server
+./target/release/ieum-chain
 ```
+
+기본 실행은 자동 모드입니다. 승인된 검증자 키가 있으면 검증자 역할을 유지하고,
+일반 사용자는 클라이언트로 시작합니다. 실제 외부 UDP 역접속이 확인되면 공개 네트워크
+지원 가능 상태로 자동 판정됩니다. 고급 사용자는 역할을 명시할 수 있습니다.
+
+```bash
+./target/release/ieum-chain --mode auto
+./target/release/ieum-chain --mode client
+./target/release/ieum-chain --mode public
+./target/release/ieum-chain --mode validator
+```
+
+기존 운영 서비스의 `ieum-chain server`와 `ieum-chain client` 명령도 계속 지원합니다.
 
 처음 실행하면 자동으로 다음 항목을 만듭니다.
 

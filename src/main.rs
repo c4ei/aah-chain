@@ -1,4 +1,4 @@
-use clap::{Args as ClapArgs, Parser, Subcommand};
+use clap::{Args as ClapArgs, Parser, Subcommand, ValueEnum};
 use ieum_chain::{
     ConsensusRuntime, ConsensusTimeouts, EventSchedule, EvidenceStore, ExternalSigner,
     FinalityStore, GenesisConfig, NetworkCommand, NetworkConfig, NetworkEvent,
@@ -34,8 +34,26 @@ mod installation;
 #[derive(Debug, Parser)]
 #[command(name = "ieum-chain", version, about = "가벼운 IEUM 테스트넷 노드")]
 struct Args {
+    /// 실행 역할. 생략하면 기존 검증자 자격을 안전하게 감지하고 나머지는 일반 노드로
+    /// 시작합니다.
+    #[arg(long, value_enum, default_value_t = RunMode::Auto, global = true)]
+    mode: RunMode,
+
     #[command(subcommand)]
     command: Option<Command>,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, ValueEnum)]
+enum RunMode {
+    /// 기존 검증자 키와 승인 목록이 일치하면 검증자, 아니면 일반 노드로 실행합니다.
+    #[default]
+    Auto,
+    /// 송금·조회·동기화를 수행하는 일반 사용자 노드입니다.
+    Client,
+    /// 외부 접속을 지원하려고 시도하며 AutoNAT 결과로 실제 도달 가능성을 확인합니다.
+    Public,
+    /// 승인된 검증자 키로 합의에 참여합니다.
+    Validator,
 }
 
 #[derive(Debug, Subcommand)]
@@ -295,6 +313,96 @@ struct ClientArgs {
     bootstrap_config: PathBuf,
 }
 
+fn default_node_args() -> NodeArgs {
+    NodeArgs {
+        port: 7001,
+        max_message_bytes: 2_097_152,
+        rpc_port: 8989,
+        rpc_host: IpAddr::V4(Ipv4Addr::LOCALHOST),
+        rpc_data_dir: PathBuf::from("data/ledger"),
+        node_key: PathBuf::from("data/node.key"),
+        validator_index: 1,
+        validator_key: PathBuf::from("config/validator.key"),
+        validators_config: PathBuf::from("config/validators.json"),
+        events_config: PathBuf::from("config/events.json"),
+        update_manifest_url: None,
+        release_public_key: None,
+        allow_insecure_test_keys: false,
+        validator_signer_command: None,
+        validator_public_key: None,
+        propose_timeout_ms: 3_000,
+        prevote_timeout_ms: 2_000,
+        precommit_timeout_ms: 2_000,
+        sync_quorum_peers: 2,
+        peer: Vec::new(),
+        no_default_bootstrap: false,
+    }
+}
+
+fn automatic_or_selected_mode(
+    requested: RunMode,
+) -> Result<(&'static str, NodeArgs, Vec<Multiaddr>, bool), String> {
+    let selected = if requested == RunMode::Auto {
+        if approved_local_validator(
+            Path::new("config/validator.key"),
+            Path::new("config/validators.json"),
+        ) {
+            log_info!(
+                "[자동 역할 선택] 승인된 검증자 키를 확인했습니다. 검증자 모드로 시작합니다."
+            );
+            RunMode::Validator
+        } else {
+            log_info!(
+                "[자동 역할 선택] 일반 노드로 시작합니다. AutoNAT 역접속에 성공하면 공개 지원 노드로 자동 판정됩니다."
+            );
+            RunMode::Client
+        }
+    } else {
+        requested
+    };
+
+    let mut node = default_node_args();
+    let is_client = selected != RunMode::Validator;
+    let label = match selected {
+        RunMode::Validator => {
+            node.node_key = PathBuf::from("data/server.node.key");
+            "검증자"
+        }
+        RunMode::Public => {
+            node.node_key = PathBuf::from("data/public.node.key");
+            node.rpc_data_dir = PathBuf::from("data/public-ledger");
+            "공개 지원 후보"
+        }
+        RunMode::Client | RunMode::Auto => {
+            node.node_key = PathBuf::from("data/client.node.key");
+            node.rpc_data_dir = PathBuf::from("data/client-ledger");
+            "일반"
+        }
+    };
+    let peers = load_bootstrap_peers(Path::new(DEFAULT_BOOTSTRAP_CONFIG), Vec::new())?;
+    Ok((label, node, peers, is_client))
+}
+
+fn approved_local_validator(key: &Path, validators_config: &Path) -> bool {
+    if !key.exists() || !validators_config.exists() {
+        return false;
+    }
+    let result = ieum_chain::validator_key::public_key_from_file(key).and_then(|public_key| {
+        Ok(load_validators(validators_config)?
+            .iter()
+            .any(|validator| validator.id.eq_ignore_ascii_case(&public_key)))
+    });
+    match result {
+        Ok(approved) => approved,
+        Err(error) => {
+            log_error!(
+                "[자동 역할 판정 경고] 기존 검증자 설정을 확인하지 못해 일반 노드로 시작합니다: {error}"
+            );
+            false
+        }
+    }
+}
+
 fn parse_sync_quorum_peers(value: &str) -> Result<usize, String> {
     let peers = value
         .parse::<usize>()
@@ -309,8 +417,14 @@ fn parse_sync_quorum_peers(value: &str) -> Result<usize, String> {
 
 #[tokio::main]
 async fn main() -> Result<(), String> {
-    let args = Args::parse();
-    let (mode, mut args, bootstrap_peers, is_client) = match args.command {
+    let cli = Args::parse();
+    if cli.command.is_some() && cli.mode != RunMode::Auto {
+        return Err(
+            "--mode는 하위 명령 없이 사용하세요. 기존 호환 명령은 `server` 또는 `client` 중 하나만 사용합니다."
+                .into(),
+        );
+    }
+    let (mode, mut args, bootstrap_peers, is_client) = match cli.command {
         Some(Command::ValidatorKey { command }) => return run_validator_key_command(command),
         Some(Command::Reward { command }) => return run_reward_command(command),
         Some(Command::Node { command }) => return run_node_command(command),
@@ -357,33 +471,7 @@ async fn main() -> Result<(), String> {
             )?;
             ("일반 PC", client.node, peers, true)
         }
-        None => {
-            let node = NodeArgs {
-                port: 7001,
-                max_message_bytes: 2_097_152,
-                rpc_port: 8989,
-                rpc_host: IpAddr::V4(Ipv4Addr::LOCALHOST),
-                rpc_data_dir: PathBuf::from("data/client-ledger"),
-                node_key: PathBuf::from("data/client.node.key"),
-                validator_index: 1,
-                validator_key: PathBuf::from("config/validator.key"),
-                validators_config: PathBuf::from("config/validators.json"),
-                events_config: PathBuf::from("config/events.json"),
-                update_manifest_url: None,
-                release_public_key: None,
-                allow_insecure_test_keys: false,
-                validator_signer_command: None,
-                validator_public_key: None,
-                propose_timeout_ms: 3_000,
-                prevote_timeout_ms: 2_000,
-                precommit_timeout_ms: 2_000,
-                sync_quorum_peers: 2,
-                peer: Vec::new(),
-                no_default_bootstrap: false,
-            };
-            let peers = load_bootstrap_peers(Path::new(DEFAULT_BOOTSTRAP_CONFIG), Vec::new())?;
-            ("일반 PC", node, peers, true)
-        }
+        None => automatic_or_selected_mode(cli.mode)?,
     };
     // 서버는 P2P/RPC 포트 자체가 인스턴스 경계이므로 같은 장비에서 여러 검증자를
     // 실행할 수 있습니다. 일반 PC 클라이언트만 중복 실행을 차단합니다.
