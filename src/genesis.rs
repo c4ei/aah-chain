@@ -77,5 +77,9 @@ mod tests {
             address.eq_ignore_ascii_case("0x475e2f4e40Dbd34370e4fce61ddFF5Ff1F2eA817")
                 && *balance == 100u128 * 10u128.pow(18)
         }));
+        assert_eq!(
+            genesis.genesis_hash().unwrap(),
+            "657ce0cfeb8ad38d88a23711ec2664e5e1033aa8ffd5bb648a02ca0f348a9e1a"
+        );
     }
 }
