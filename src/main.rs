@@ -19,10 +19,11 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 const DEFAULT_BOOTSTRAP_CONFIG: &str = "config/bootstrap.json";
 const DEFAULT_NETWORK_CONFIG: &str = "config/network.json";
-const DEFAULT_BOOTSTRAP_PEERS: [&str; 3] = [
+const DEFAULT_BOOTSTRAP_PEERS: [&str; 4] = [
     "/dns4/node.ieum.aah.name/udp/7001/quic-v1/p2p/12D3KooWGABnBEucGacnREpBieFwspL5q7Aa6RRuj1MtxEYwrPo2",
-    "/dns4/node.ieum.aah.name/udp/7002/quic-v1/p2p/12D3KooWFgNUFENiTt9ftxGU97PuRJN2kiayFgwNPDAPmUVB3xgD",
-    "/dns4/node.ieum.aah.name/udp/7003/quic-v1/p2p/12D3KooWNCudCpi43r6bBU2gTyLsm18Vn8G7mxDK4XBpNzmCh7zb",
+    "/dns4/node.ieum.aah.name/udp/7002/quic-v1/p2p/12D3KooWLqqVdBzWGGc3bjaarVpsu2WA6DTYuzKGoYCznbgrugnX",
+    "/dns4/node.ieum.aah.name/udp/7003/quic-v1/p2p/12D3KooWE18Cv12b4R5bjrZg1RDGiPXbMDQZqz1t9rfrNaLpwDRB",
+    "/dns4/node.ieum.aah.name/udp/7004/quic-v1/p2p/12D3KooWCByiTkyDHySsS3GRFVHue1ewPGSdgSWEvzMrtwggM3Wg",
 ];
 const SERVER_INSTANCE_PORT: u16 = 49_889;
 const CLIENT_INSTANCE_PORT: u16 = 49_890;
@@ -139,6 +140,12 @@ enum NodeCommand {
     Verify,
     /// 키·원장·네트워크 설정을 점검하고 안전하게 자동 복구합니다.
     Doctor,
+    /// 영구 노드 키를 읽거나 생성하고 대응하는 libp2p PeerId를 출력합니다.
+    PeerId {
+        /// 읽거나 처음 한 번 생성할 영구 노드 키
+        #[arg(long, default_value = "data/server.node.key")]
+        key: PathBuf,
+    },
     /// 서버 신원 키는 보존하고 원장만 백업한 뒤 비워 재동기화합니다.
     Clean {
         /// 원장 백업 및 초기화를 명시적으로 확인합니다.
@@ -1119,6 +1126,11 @@ fn run_node_command(command: NodeCommand) -> Result<(), String> {
             println!("이제 `ieum-chain server` 또는 systemd 서비스를 다시 시작하세요.");
             Ok(())
         }
+        NodeCommand::PeerId { key } => {
+            let identity = load_or_create_node_key(&key)?;
+            println!("{}", libp2p::PeerId::from(identity.public()));
+            Ok(())
+        }
         NodeCommand::Clean { yes: true } => {
             let backup = installation::clean_ledger_preserving_identity(ledger_dir)?;
             println!("[원장 안전 백업] {}", backup.display());
@@ -1733,7 +1745,7 @@ fn load_bootstrap_peers(
     mut command_line_peers: Vec<Multiaddr>,
 ) -> Result<Vec<Multiaddr>, String> {
     // 기본 실행은 과거 배포본에 남은 bootstrap.json의 오래된 PeerId에 영향을 받지
-    // 않습니다. config/network.json으로 명시 설정했거나 내장 3개 노드를 사용합니다.
+    // 않습니다. config/network.json으로 명시 설정했거나 내장 4개 노드를 사용합니다.
     let mut peers = if path == Path::new(DEFAULT_BOOTSTRAP_CONFIG) {
         configured_bootstrap_peers()?
     } else if path.exists() {
@@ -1822,9 +1834,9 @@ mod tests {
     }
 
     #[test]
-    fn default_bootstrap_contains_three_public_nodes() {
+    fn default_bootstrap_contains_four_public_nodes() {
         let peers = default_bootstrap_peers().unwrap();
-        assert_eq!(peers.len(), 3);
+        assert_eq!(peers.len(), 4);
         assert!(
             peers
                 .iter()
@@ -1834,6 +1846,11 @@ mod tests {
             peers
                 .iter()
                 .any(|peer| peer.to_string().contains("/udp/7003/"))
+        );
+        assert!(
+            peers
+                .iter()
+                .any(|peer| peer.to_string().contains("/udp/7004/"))
         );
     }
 }

@@ -1,7 +1,8 @@
 {
   "addresses": [
     "/dns4/node.ieum.aah.name/udp/7001/quic-v1/p2p/12D3KooWGABnBEucGacnREpBieFwspL5q7Aa6RRuj1MtxEYwrPo2",
-    "/dns4/node.ieum.aah.name/udp/7002/quic-v1/p2p/12D3KooWFgNUFENiTt9ftxGU97PuRJN2kiayFgwNPDAPmUVB3xgD",
-    "/dns4/node.ieum.aah.name/udp/7003/quic-v1/p2p/12D3KooWNCudCpi43r6bBU2gTyLsm18Vn8G7mxDK4XBpNzmCh7zb"
+    "/dns4/node.ieum.aah.name/udp/7002/quic-v1/p2p/12D3KooWLqqVdBzWGGc3bjaarVpsu2WA6DTYuzKGoYCznbgrugnX",
+    "/dns4/node.ieum.aah.name/udp/7003/quic-v1/p2p/12D3KooWE18Cv12b4R5bjrZg1RDGiPXbMDQZqz1t9rfrNaLpwDRB",
+    "/dns4/node.ieum.aah.name/udp/7004/quic-v1/p2p/12D3KooWCByiTkyDHySsS3GRFVHue1ewPGSdgSWEvzMrtwggM3Wg"
   ]
 }

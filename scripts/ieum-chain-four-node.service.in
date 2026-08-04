@@ -1,0 +1,30 @@
+[Unit]
+Description=@DESCRIPTION@
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=@RUN_USER@
+Group=@RUN_GROUP@
+WorkingDirectory=@INSTALL_DIR@
+ExecStart=@INSTALL_DIR@/ieum-chain server \
+  --port @P2P_PORT@ \
+  --rpc-port @RPC_PORT@ \
+  --rpc-host 127.0.0.1 \
+  --rpc-data-dir data/ledger \
+  --node-key @NODE_KEY@ \
+  --validator-key config/validator.key \
+  --validators-config config/validators.json \
+  --events-config config/events.json \
+  --validator-index @VALIDATOR_INDEX@
+Restart=always
+RestartSec=5
+TimeoutStopSec=30
+KillSignal=SIGINT
+LimitNOFILE=65536
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
