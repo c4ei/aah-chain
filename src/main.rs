@@ -986,20 +986,28 @@ async fn main() -> Result<(), String> {
                                     commands.send(NetworkCommand::PublishConsensus(precommit.clone())).await.map_err(|e| e.to_string())?;
                                     consensus.receive_vote(precommit)?;
                                 }
+                                publish_replayed_votes(&mut consensus, &commands).await?;
                                 finalize_if_ready(&mut consensus, &rpc, &commands, &finality_store).await?;
                             }
                             Err(error) => log_error!("[BFT 제안 거부] {error}"),
                         }
                     }
                     Some(NetworkEvent::ConsensusReceived { message, .. }) if !is_client && local_is_validator => {
-                        match consensus.receive_vote(message) {
+                        match consensus.receive_vote(message.clone()) {
                             Ok(Some(precommit)) => {
                                 commands.send(NetworkCommand::PublishConsensus(precommit.clone())).await.map_err(|e| e.to_string())?;
                                 consensus.receive_vote(precommit)?;
                             }
                             Ok(None) => {}
+                            Err(error) if ieum_chain::consensus_runtime::is_deferable_vote_error(&error) => {
+                                consensus.defer_vote(message);
+                                ieum_chain::logger::write_repeated_info(
+                                    "[BFT 투표 보류] 제안 또는 이전 합의 단계를 기다립니다."
+                                );
+                            }
                             Err(error) => log_error!("[BFT 투표 거부] {error}"),
                         }
+                        publish_replayed_votes(&mut consensus, &commands).await?;
                         persist_and_publish_evidence(
                             &mut consensus,
                             &evidence_store,
@@ -1261,6 +1269,19 @@ async fn persist_and_publish_evidence(
                 .await
                 .map_err(|error| error.to_string())?;
         }
+    }
+    Ok(())
+}
+
+async fn publish_replayed_votes(
+    consensus: &mut ConsensusRuntime,
+    commands: &tokio::sync::mpsc::Sender<NetworkCommand>,
+) -> Result<(), String> {
+    for vote in consensus.replay_deferred_votes()? {
+        commands
+            .send(NetworkCommand::PublishConsensus(vote))
+            .await
+            .map_err(|error| error.to_string())?;
     }
     Ok(())
 }

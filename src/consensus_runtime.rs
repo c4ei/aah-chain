@@ -46,6 +46,7 @@ pub struct ConsensusRuntime {
     timeouts: ConsensusTimeouts,
     validators: Vec<Validator>,
     precommits: Vec<ConsensusMessage>,
+    deferred_votes: Vec<ConsensusMessage>,
     finalized: Vec<FinalityCertificate>,
     pending_finalized: Vec<FinalityCertificate>,
     event_schedule: EventSchedule,
@@ -95,6 +96,7 @@ impl ConsensusRuntime {
             timeouts,
             validators,
             precommits: Vec::new(),
+            deferred_votes: Vec::new(),
             finalized: Vec::new(),
             pending_finalized: Vec::new(),
             event_schedule: EventSchedule::default(),
@@ -225,6 +227,50 @@ impl ConsensusRuntime {
             self.pending_finalized.push(certificate);
         }
         Ok(None)
+    }
+
+    /// GossipSub에서 제안보다 먼저 도착한 정상 투표를 단계 전환 때까지 보관합니다.
+    pub fn defer_vote(&mut self, vote: ConsensusMessage) {
+        const MAX_DEFERRED_VOTES: usize = 1_024;
+        if self.deferred_votes.iter().any(|known| {
+            known.height == vote.height
+                && known.round == vote.round
+                && known.vote_type == vote.vote_type
+                && known.validator_id == vote.validator_id
+                && known.block_hash == vote.block_hash
+        }) {
+            return;
+        }
+        if self.deferred_votes.len() >= MAX_DEFERRED_VOTES {
+            self.deferred_votes.remove(0);
+        }
+        self.deferred_votes.push(vote);
+    }
+
+    /// 상태가 전진한 뒤 처리 가능한 보류 투표를 재생합니다.
+    pub fn replay_deferred_votes(&mut self) -> Result<Vec<ConsensusMessage>, String> {
+        let mut outbound = Vec::new();
+        loop {
+            let mut progressed = false;
+            let mut remaining = Vec::new();
+            for vote in std::mem::take(&mut self.deferred_votes) {
+                match self.receive_vote(vote.clone()) {
+                    Ok(Some(precommit)) => {
+                        outbound.push(precommit.clone());
+                        self.receive_vote(precommit)?;
+                        progressed = true;
+                    }
+                    Ok(None) => progressed = true,
+                    Err(error) if is_deferable_vote_error(&error) => remaining.push(vote),
+                    Err(_) => {}
+                }
+            }
+            self.deferred_votes = remaining;
+            if !progressed {
+                break;
+            }
+        }
+        Ok(outbound)
     }
 
     pub fn timeout_if_due(&mut self, now: Instant) -> Result<bool, String> {
@@ -530,5 +576,71 @@ impl ConsensusRuntime {
             }
         }
         Ok(())
+    }
+}
+
+pub fn is_deferable_vote_error(error: &str) -> bool {
+    matches!(error, "현재 합의 단계와 투표 종류가 일치하지 않습니다.")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::consensus::ConsensusMessage;
+
+    #[test]
+    fn votes_arriving_before_proposal_are_replayed() {
+        let keys: Vec<_> = (1..=4)
+            .map(|value| Wallet::from_seed([value; 32]))
+            .collect();
+        let validators: Vec<_> = keys
+            .iter()
+            .map(|key| Validator::new(key.address(), 100))
+            .collect();
+        let chain = Blockchain::new(vec![(keys[0].address(), 1_000)]);
+        let block = Block::new(
+            1,
+            chain.blocks.last().unwrap().hash.clone(),
+            1,
+            keys[0].address(),
+            Vec::new(),
+        );
+        let mut runtimes: Vec<_> = (1..=4)
+            .map(|value| Wallet::from_seed([value; 32]))
+            .map(|key| {
+                ConsensusRuntime::new(
+                    chain.clone(),
+                    validators.clone(),
+                    key,
+                    Duration::from_secs(1),
+                )
+                .unwrap()
+            })
+            .collect();
+        let proposal = runtimes
+            .iter()
+            .find(|runtime| runtime.can_make_proposal())
+            .unwrap()
+            .make_proposal(block)
+            .unwrap();
+        let block_hash = proposal.block.hash.clone();
+        let receiver = &mut runtimes[0];
+
+        for key in keys.iter().take(3) {
+            let vote = ConsensusMessage::prevote(1, 0, key, &block_hash);
+            let error = receiver.receive_vote(vote.clone()).unwrap_err();
+            assert!(is_deferable_vote_error(&error));
+            receiver.defer_vote(vote);
+        }
+
+        let local_prevote = receiver.receive_proposal(proposal).unwrap();
+        let _ = receiver.receive_vote(local_prevote).unwrap();
+        let outbound = receiver.replay_deferred_votes().unwrap();
+
+        assert!(matches!(
+            receiver.phase(),
+            ConsensusPhase::Precommit | ConsensusPhase::Finalized
+        ));
+        assert!(!outbound.is_empty());
     }
 }

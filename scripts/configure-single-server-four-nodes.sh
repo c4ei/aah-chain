@@ -79,6 +79,13 @@ for index in 0 1 2 3; do
             "$source_binary" "$dir/ieum-chain"
     fi
 
+    # 각 프로세스는 자기 실행파일 옆의 config/update.json만 신뢰합니다. 대표
+    # 노드에만 설정이 있으면 추가 3개 인스턴스는 영원히 이전 버전에 남습니다.
+    if [[ -f "${dirs[0]}/config/update.json" && "$index" -gt 0 ]]; then
+        install -m 644 -o "$run_user" -g "$run_group" \
+            "${dirs[0]}/config/update.json" "$dir/config/update.json"
+    fi
+
     peer_ids[$index]="$(
         cd "$dir"
         runuser -u "$run_user" -- \
