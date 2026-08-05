@@ -17,11 +17,13 @@ pub enum ScheduledEventAction {
     },
     PeriodicProducerReward {
         producer: Address,
+        #[serde(with = "crate::model::decimal_u128")]
         amount: u128,
     },
     IncidentCompensation {
         incident_id: String,
         victim: Address,
+        #[serde(with = "crate::model::decimal_u128")]
         amount: u128,
     },
     ProtocolCheckpoint {
@@ -30,11 +32,13 @@ pub enum ScheduledEventAction {
     /// 최초 4검증자 구성이 완성됐을 때 검증자별로 한 번만 지급합니다.
     BootstrapValidatorReward {
         registrations: Vec<ValidatorRegistration>,
+        #[serde(with = "crate::model::decimal_u128")]
         amount: u128,
     },
     /// 서명으로 소유권을 증명한 서로 다른 노드가 100개 이상 모였을 때 한 번만 지급합니다.
     NodeMilestoneReward {
         registrations: Vec<NodeRewardRegistration>,
+        #[serde(with = "crate::model::decimal_u128")]
         amount: u128,
     },
 }
@@ -42,6 +46,7 @@ pub enum ScheduledEventAction {
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct EventPayment {
     pub address: Address,
+    #[serde(with = "crate::model::decimal_u128")]
     pub amount: u128,
 }
 

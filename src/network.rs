@@ -1395,7 +1395,9 @@ fn format_duration(duration: Duration) -> String {
 #[cfg(test)]
 mod connection_log_tests {
     use super::*;
-    use crate::{Block, CommunicationKind, SignedProposal, Wallet};
+    use crate::{
+        Block, CommunicationKind, ScheduledEvent, ScheduledEventAction, SignedProposal, Wallet,
+    };
 
     #[test]
     fn p2p_proposal_with_u128_transaction_round_trips() {
@@ -1424,6 +1426,36 @@ mod connection_log_tests {
         match decoded {
             WireMessage::Proposal(decoded) => assert_eq!(decoded, proposal),
             _ => panic!("제안 WireMessage가 다른 종류로 역직렬화되었습니다."),
+        }
+    }
+
+    #[test]
+    fn p2p_proposal_with_u128_system_event_round_trips() {
+        let proposer = Wallet::from_seed([34; 32]);
+        let block = Block::new(
+            1,
+            Block::genesis().hash,
+            1_785_914_671,
+            proposer.address(),
+            Vec::new(),
+        )
+        .with_system_events(vec![ScheduledEvent {
+            id: "periodic-producer-reward-test".into(),
+            execute_at: 1_785_914_671,
+            action: ScheduledEventAction::PeriodicProducerReward {
+                producer: proposer.address(),
+                amount: 10 * 10u128.pow(18),
+            },
+        }]);
+        let proposal = SignedProposal::new(1, 0, &proposer, block);
+        let wire = WireMessage::Proposal(proposal.clone());
+
+        let bytes = encode_wire_message(&wire).unwrap();
+        let decoded = decode_wire_message(&bytes, 2 * 1024 * 1024).unwrap();
+
+        match decoded {
+            WireMessage::Proposal(decoded) => assert_eq!(decoded, proposal),
+            _ => panic!("시스템 이벤트 Proposal이 다른 종류로 역직렬화되었습니다."),
         }
     }
 

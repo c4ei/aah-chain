@@ -20,7 +20,7 @@ pub struct Transaction {
 
 /// JSON 구현의 128비트 숫자 지원 여부와 무관한 고정 표현입니다.
 /// 새 데이터는 십진 문자열로 쓰고, 기존 원장/P2P JSON의 숫자도 계속 읽습니다.
-mod decimal_u128 {
+pub(crate) mod decimal_u128 {
     use serde::de::{self, Visitor};
     use serde::{Deserializer, Serializer};
     use std::fmt;
