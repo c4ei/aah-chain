@@ -25,6 +25,7 @@ pub const BLOCK_TOPIC: &str = "ieum-chain/blocks/1";
 pub const CONSENSUS_TOPIC: &str = "ieum-chain/consensus/1";
 pub const SYNC_TOPIC: &str = "ieum-chain/sync/2";
 pub const COMMUNICATION_PROTOCOL: &str = "/ieum-chain/communication/1";
+// The suffix is one binary framing-version byte, not the four text bytes "\x01".
 const COMPRESSED_WIRE_MAGIC: &[u8; 6] = b"IEUMZ\x01";
 const COMPRESSION_THRESHOLD_BYTES: usize = 1_024;
 const WIRE_HEADER_BYTES: usize = COMPRESSED_WIRE_MAGIC.len() + 4;
@@ -1424,6 +1425,12 @@ mod connection_log_tests {
             WireMessage::Proposal(decoded) => assert_eq!(decoded, proposal),
             _ => panic!("제안 WireMessage가 다른 종류로 역직렬화되었습니다."),
         }
+    }
+
+    #[test]
+    fn compressed_wire_magic_has_binary_version_byte() {
+        assert_eq!(COMPRESSED_WIRE_MAGIC, &[b'I', b'E', b'U', b'M', b'Z', 0x01]);
+        assert_eq!(WIRE_HEADER_BYTES, 10);
     }
 
     #[test]
