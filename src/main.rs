@@ -712,6 +712,9 @@ async fn main() -> Result<(), String> {
         log_info!("[BFT 인증서 복원] {imported}개");
     }
     let mut consensus_tick = tokio::time::interval(Duration::from_millis(500));
+    // 비제안자 RPC로 들어온 거래는 제안자가 받을 때까지 주기적으로 재전파하되,
+    // 매 consensus tick마다 같은 payload를 쏟아내지는 않습니다.
+    let mut announced_transactions = std::collections::HashMap::<String, std::time::Instant>::new();
     // 연결 직후에도 별도로 전송하므로 주기 공지는 복구용 저빈도 heartbeat만 사용합니다.
     let mut registration_tick = tokio::time::interval(Duration::from_secs(60));
     let auto_update = ieum_chain::updater::AutoUpdateConfig::discover()?;
@@ -815,11 +818,20 @@ async fn main() -> Result<(), String> {
                     // RPC가 어느 노드로 들어와도 현재 제안자가 받을 수 있게 읽기 전용으로 전파합니다.
                     // 비제안자는 drain_transactions를 호출하지 않으므로 원본 거래는 그대로 보존됩니다.
                     if !consensus.can_make_proposal() {
+                        let now = std::time::Instant::now();
                         for transaction in rpc.pending_transactions_snapshot(1_000)? {
+                            let transaction_id = transaction.id();
+                            let should_publish = announced_transactions
+                                .get(&transaction_id)
+                                .is_none_or(|last| now.duration_since(*last) >= Duration::from_secs(2));
+                            if !should_publish {
+                                continue;
+                            }
                             commands
                                 .send(NetworkCommand::PublishTransaction(transaction))
                                 .await
                                 .map_err(|error| error.to_string())?;
+                            announced_transactions.insert(transaction_id, now);
                         }
                     }
                     let timestamp = unix_timestamp();

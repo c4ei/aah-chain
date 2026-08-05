@@ -137,6 +137,48 @@ for index in 1 2 3 4; do
   wait_for_rpc "$index"
 done
 
+# RPC listen은 P2P mesh보다 먼저 준비될 수 있다. 연결 전에 거래를 넣으면 노드별로
+# 서로 다른 round를 시작할 수 있으므로 hub 3개/leaf 1개 연결을 확인한 뒤 송금한다.
+for _ in $(seq 1 120); do
+  peer_counts=()
+  topology_ready=true
+  for index in 1 2 3 4; do
+    port="$((9200 + index))"
+    if ! status="$(rpc "$port" ieum_nodeStatus '[]' 2>/dev/null)"; then
+      topology_ready=false
+      break
+    fi
+    if ! peers="$(python3 -c 'import json,sys; print(json.load(sys.stdin)["result"]["peers"])' <<<"$status" 2>/dev/null)"; then
+      topology_ready=false
+      break
+    fi
+    peer_counts+=("$peers")
+  done
+  if [[ "$topology_ready" == true ]] &&
+     [[ "${#peer_counts[@]}" -eq 4 ]] &&
+     [[ "${peer_counts[0]}" -ge 3 ]] &&
+     [[ "${peer_counts[1]}" -ge 1 ]] &&
+     [[ "${peer_counts[2]}" -ge 1 ]] &&
+     [[ "${peer_counts[3]}" -ge 1 ]]; then
+    echo "4노드 P2P 토폴로지 준비 완료: peers=${peer_counts[*]}"
+    break
+  fi
+  sleep 0.5
+done
+
+if [[ "${#peer_counts[@]}" -ne 4 ]] ||
+   [[ "${peer_counts[0]:-0}" -lt 3 ]] ||
+   [[ "${peer_counts[1]:-0}" -lt 1 ]] ||
+   [[ "${peer_counts[2]:-0}" -lt 1 ]] ||
+   [[ "${peer_counts[3]:-0}" -lt 1 ]]; then
+  echo "4노드 P2P 토폴로지가 60초 안에 준비되지 않았습니다: peers=${peer_counts[*]:-확인불가}"
+  dump_logs
+  exit 1
+fi
+
+# GossipSub 구독 정보가 연결 직후 전파될 시간을 짧게 보장한다.
+sleep 2
+
 faucet_response="$(rpc 9202 eth_coinbase '[]')"
 
 faucet="$(
