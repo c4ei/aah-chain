@@ -115,6 +115,13 @@ impl RpcNodeHandle {
             .map_err(|_| "RPC 상태 읽기 잠금이 손상되었습니다.".into())
     }
 
+    pub fn pending_transactions_snapshot(&self, limit: usize) -> Result<Vec<Transaction>, String> {
+        self.state
+            .read()
+            .map(|state| state.pool.snapshot(limit))
+            .map_err(|_| "RPC 상태 읽기 잠금이 손상되었습니다.".into())
+    }
+
     pub fn restore_transactions(&self, transactions: Vec<Transaction>) -> Result<(), String> {
         let mut state = self
             .state
@@ -192,13 +199,8 @@ impl RpcServer {
         // config genesis가 없는 개발망도 모든 프로세스가 같은 genesis/state root로
         // 시작해야 합니다. 이 공개 개발키는 테스트 전용이며 메인넷에서는 genesis와
         // 암호화 keystore를 반드시 명시해야 합니다.
-        let development_wallets = (42u8..=45)
-            .map(|key_byte| {
-                AccountWallet::from_private_key([key_byte; 32])
-                    .expect("고정 개발 계정 개인키는 유효해야 합니다.")
-            })
-            .collect::<Vec<_>>();
-        let faucet_address = development_wallets[0].address();
+        let faucet = AccountWallet::from_private_key([42; 32])
+            .expect("개발 faucet 개인키는 유효해야 합니다.");
         let chain_id = config
             .genesis
             .as_ref()
@@ -220,10 +222,7 @@ impl RpcServer {
                 .expect("RpcServer에는 검증된 제네시스 설정을 전달해야 합니다."),
             None => Blockchain::with_chain_id(
                 chain_id,
-                development_wallets
-                    .iter()
-                    .map(|wallet| (wallet.address(), 1_000_000_000_000_000_000))
-                    .collect(),
+                vec![(faucet.address(), 1_000_000_000_000_000_000)],
             ),
         };
         if let Some(state) = state_store
@@ -275,10 +274,9 @@ impl RpcServer {
                     .expect("활성 블록은 체크포인트에 연결되어야 합니다.");
             }
         }
-        let wallets = development_wallets
-            .into_iter()
-            .map(|wallet| (wallet.address(), wallet))
-            .collect::<HashMap<_, _>>();
+        let mut wallets = HashMap::new();
+        let faucet_address = faucet.address();
+        wallets.insert(faucet_address.clone(), faucet);
         let initial_height = chain.tip_height();
         Self {
             state: Arc::new(RwLock::new(RpcState {

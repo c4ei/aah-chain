@@ -2,9 +2,10 @@ use clap::{Args as ClapArgs, Parser, Subcommand, ValueEnum};
 use ieum_chain::{
     ConsensusRuntime, ConsensusTimeouts, EventSchedule, EvidenceStore, ExternalSigner,
     FinalityStore, GenesisConfig, NetworkCommand, NetworkConfig, NetworkEvent,
-    NodeRewardRegistration, P2pNode, RpcConfig, RpcServer, ScheduledEvent, ScheduledEventAction,
-    SyncTip, TipQuorum, UpgradeSchedule, Validator, ValidatorRegistration, ValidatorSigner, Wallet,
-    log_error, log_info, logger::init_server_log, node_key::load_or_create_node_key,
+    NodeRewardRegistration, NodeWalletKeystore, P2pNode, RpcConfig, RpcServer, ScheduledEvent,
+    ScheduledEventAction, SyncTip, TipQuorum, UpgradeSchedule, Validator, ValidatorRegistration,
+    ValidatorSigner, Wallet, log_error, log_info, logger::init_server_log,
+    node_key::load_or_create_node_key,
 };
 use libp2p::{Multiaddr, multiaddr::Protocol};
 use rand_core::{OsRng, RngCore};
@@ -126,8 +127,10 @@ enum NetworkCommandConfig {
 enum RewardCommand {
     /// 이 노드의 영구 보상 주소를 출력합니다.
     Address {
-        #[arg(long, default_value = "data/keys/node_reward_signing.key")]
-        key: PathBuf,
+        #[arg(long, default_value = "data/keys/node_wallet.keystore")]
+        keystore: PathBuf,
+        #[arg(long, default_value = "data/keys/node_wallet.password")]
+        password_file: PathBuf,
     },
     /// 보상 잔액을 다른 IEUM 지갑으로 서명 전송합니다.
     Send {
@@ -139,10 +142,22 @@ enum RewardCommand {
         /// 사람이 읽는 IEUM 단위. 기본 0.000001 IEUM
         #[arg(long, default_value = "0.000001")]
         fee: String,
-        #[arg(long, default_value = "data/keys/node_reward_signing.key")]
-        key: PathBuf,
+        #[arg(long, default_value = "data/keys/node_wallet.keystore")]
+        keystore: PathBuf,
+        #[arg(long, default_value = "data/keys/node_wallet.password")]
+        password_file: PathBuf,
         #[arg(long, default_value_t = 8989)]
         rpc_port: u16,
+    },
+    /// 노드 지갑 주소를 유지한 채 사용자가 준비한 새 암호로 원자적으로 재암호화합니다.
+    ChangePassword {
+        #[arg(long, default_value = "data/keys/node_wallet.keystore")]
+        keystore: PathBuf,
+        #[arg(long, default_value = "data/keys/node_wallet.password")]
+        password_file: PathBuf,
+        /// 새 암호만 담긴 소유자 전용(0600) 파일. 명령행에 암호를 직접 노출하지 않습니다.
+        #[arg(long)]
+        new_password_file: PathBuf,
     },
 }
 
@@ -644,14 +659,19 @@ async fn main() -> Result<(), String> {
     if let Some(registration) = &local_registration {
         registrations.insert(registration.validator_id.clone(), registration.clone());
     }
-    let reward_wallet =
+    let reward_registration_wallet =
         load_or_create_reward_wallet(Path::new("data/keys/node_reward_signing.key"))?;
+    let reward_wallet = NodeWalletKeystore::load_or_create_default(
+        Path::new("data/keys/node_wallet.keystore"),
+        Path::new("data/keys/node_wallet.password"),
+    )?;
     let reward_registration_bytes =
         NodeRewardRegistration::bytes_to_sign(&reward_wallet.address(), &peer_id.to_string());
     let local_reward_registration = NodeRewardRegistration {
         reward_address: reward_wallet.address(),
         peer_id: peer_id.to_string(),
-        signature_hex: reward_wallet.sign_bytes(&reward_registration_bytes),
+        signature_hex: reward_registration_wallet.sign_bytes(&reward_registration_bytes),
+        registration_signer: reward_registration_wallet.address(),
         node_public_key_hex: hex::encode(reward_node_key.public().encode_protobuf()),
         node_signature_hex: hex::encode(
             reward_node_key
@@ -792,7 +812,16 @@ async fn main() -> Result<(), String> {
                         consensus.chain.tip_height().saturating_add(1),
                         SUPPORTED_PROTOCOL_VERSION,
                     )?;
-                    let pending = rpc.drain_transactions(1_000)?;
+                    // RPC가 어느 노드로 들어와도 현재 제안자가 받을 수 있게 읽기 전용으로 전파합니다.
+                    // 비제안자는 drain_transactions를 호출하지 않으므로 원본 거래는 그대로 보존됩니다.
+                    if !consensus.can_make_proposal() {
+                        for transaction in rpc.pending_transactions_snapshot(1_000)? {
+                            commands
+                                .send(NetworkCommand::PublishTransaction(transaction))
+                                .await
+                                .map_err(|error| error.to_string())?;
+                        }
+                    }
                     let timestamp = unix_timestamp();
                     let mut due_events =
                         event_schedule.due(timestamp, consensus.chain.executed_events());
@@ -835,9 +864,11 @@ async fn main() -> Result<(), String> {
                             },
                         });
                     }
-                    if (!pending.is_empty() || !due_events.is_empty())
-                        && consensus.can_make_proposal()
+                    if consensus.can_make_proposal()
+                        && (rpc.has_pending_transactions()? || !due_events.is_empty())
                     {
+                        // 제안자만 거래 큐를 비웁니다. 비제안자 RPC에 들어온 거래를 보존합니다.
+                        let pending = rpc.drain_transactions(1_000)?;
                         let previous = consensus.chain.blocks.last().unwrap();
                         let block = ieum_chain::Block::new(
                             previous.height + 1,
@@ -964,7 +995,7 @@ async fn main() -> Result<(), String> {
                             continue;
                         }
                         if let Err(error) = ieum_chain::wallet::verify_signature(
-                            &registration.reward_address,
+                            registration.registration_signer(),
                             &NodeRewardRegistration::bytes_to_sign(
                                 &registration.reward_address,
                                 &registration.peer_id,
@@ -1429,21 +1460,64 @@ fn load_or_create_reward_wallet(path: &Path) -> Result<Wallet, String> {
 
 fn run_reward_command(command: RewardCommand) -> Result<(), String> {
     match command {
-        RewardCommand::Address { key } => {
-            println!("{}", load_or_create_reward_wallet(&key)?.address());
+        RewardCommand::Address {
+            keystore,
+            password_file,
+        } => {
+            println!(
+                "{}",
+                NodeWalletKeystore::load_or_create_default(&keystore, &password_file)?.address()
+            );
             Ok(())
         }
         RewardCommand::Send {
             to,
             amount,
             fee,
-            key,
+            keystore,
+            password_file,
             rpc_port,
         } => {
-            let wallet = load_or_create_reward_wallet(&key)?;
+            let wallet = NodeWalletKeystore::load_or_create_default(&keystore, &password_file)?;
             send_wallet_balance(&wallet, to, amount, fee, rpc_port)
         }
+        RewardCommand::ChangePassword {
+            keystore,
+            password_file,
+            new_password_file,
+        } => {
+            let old_password = fs::read_to_string(&password_file)
+                .map_err(|error| format!("현재 노드 지갑 암호 읽기 실패: {error}"))?;
+            let new_password = fs::read_to_string(&new_password_file)
+                .map_err(|error| format!("새 노드 지갑 암호 읽기 실패: {error}"))?;
+            let old_password = old_password.trim();
+            let new_password = new_password.trim();
+            NodeWalletKeystore::change_password(&keystore, old_password, new_password)?;
+            if let Err(error) = atomic_private_write(&password_file, new_password.as_bytes()) {
+                let _ = NodeWalletKeystore::change_password(&keystore, new_password, old_password);
+                return Err(format!(
+                    "암호 파일 교체 실패로 keystore를 기존 암호로 복원했습니다: {error}"
+                ));
+            }
+            println!("노드 지갑 주소를 유지한 채 암호를 변경했습니다.");
+            Ok(())
+        }
     }
+}
+
+fn atomic_private_write(path: &Path, bytes: &[u8]) -> Result<(), String> {
+    let temporary = path.with_extension("tmp");
+    let mut options = OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options.open(&temporary).map_err(|e| e.to_string())?;
+    file.write_all(bytes).map_err(|e| e.to_string())?;
+    file.sync_all().map_err(|e| e.to_string())?;
+    fs::rename(temporary, path).map_err(|e| e.to_string())
 }
 
 fn send_wallet_balance(

@@ -154,7 +154,7 @@ impl ScheduledEvent {
                         return Err("노드 마일스톤 보상 증명에 중복 노드나 주소가 있습니다.".into());
                     }
                     verify_signature(
-                        &registration.reward_address,
+                        registration.registration_signer(),
                         &NodeRewardRegistration::bytes_to_sign(
                             &registration.reward_address,
                             &registration.peer_id,

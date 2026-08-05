@@ -89,6 +89,11 @@ impl Mempool {
         self.transactions.is_empty()
     }
 
+    /// P2P 전파용 읽기 전용 복사본입니다. 큐의 소유권이나 순서를 바꾸지 않습니다.
+    pub fn snapshot(&self, max_count: usize) -> Vec<Transaction> {
+        self.transactions.iter().take(max_count).cloned().collect()
+    }
+
     /// 블록 최대 거래 수만큼 앞에서 꺼냅니다.
     /// 운영 버전에서는 수수료와 공정성을 함께 고려한 선택 정책이 필요합니다.
     pub fn drain(&mut self, max_count: usize) -> Vec<Transaction> {

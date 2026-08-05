@@ -87,11 +87,21 @@ pub struct NodeRewardRegistration {
     pub reward_address: String,
     pub peer_id: String,
     pub signature_hex: String,
+    #[serde(default)]
+    pub registration_signer: String,
     pub node_public_key_hex: String,
     pub node_signature_hex: String,
 }
 
 impl NodeRewardRegistration {
+    pub fn registration_signer(&self) -> &str {
+        if self.registration_signer.is_empty() {
+            &self.reward_address
+        } else {
+            &self.registration_signer
+        }
+    }
+
     pub fn bytes_to_sign(reward_address: &str, peer_id: &str) -> Vec<u8> {
         format!("ieum-node-reward-registration-v1:{reward_address}:{peer_id}").into_bytes()
     }

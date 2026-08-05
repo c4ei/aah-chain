@@ -21,6 +21,7 @@ pub mod modules;
 pub mod network;
 pub mod node_emission;
 pub mod node_key;
+pub mod node_wallet_keystore;
 pub mod operations;
 pub mod peer_guard;
 pub mod raw_transaction;
@@ -73,6 +74,7 @@ pub use node_emission::{
     MAIN_NODE_PEER_IDS, REWARD_ACTIVATION_HEIGHT, REWARD_ACTIVATION_UNIX, TOTAL_NODE_EMISSION,
     annual_budget, daily_budget, is_reward_active, settle_daily_rewards,
 };
+pub use node_wallet_keystore::NodeWalletKeystore;
 pub use operations::{NodeStorageMode, PruningPolicy, StorageManifest};
 pub use peer_guard::{PeerDecision, PeerGuard};
 pub use recovery::{
