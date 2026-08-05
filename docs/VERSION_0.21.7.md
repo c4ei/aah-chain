@@ -4,8 +4,14 @@
 
 ## 이번 버전에서 완료
 
+- `ieum-chain server --git_action_test`를 GitHub Actions 전용 격리 모드로 추가한다.
+- `--git_action_test`에서는 P2P를 `127.0.0.1`에만 바인딩하고 mDNS 주소 학습,
+  AutoNAT 서버 등록, 릴레이 예약과 운영 bootstrap 접속을 비활성화한다.
+- `--git_action_test`에서만 고정 개발 검증자 키와 짧은 BFT 제한 시간을 자동 적용한다.
+  일반 실행은 기존 운영 P2P, 키, 제한 시간 설정을 그대로 사용한다.
 - 4프로세스 CI를 매 실행마다 새 임시 원장을 사용하는 일회용 개발망으로 유지한다.
-- 고정 개인키와 일치하는 개발 테스트 계정 4개를 제네시스에 추가하고 각각 1 IEUM을 배정한다.
+- 운영 `config/genesis.json`은 변경하지 않고 `--git_action_test` 실행 중에만
+  고정 개인키와 일치하는 개발 테스트 계정 4개에 각각 1 IEUM을 배정한다.
 - 네 노드 모두에서 네 테스트 계정이 각각 최소 1 IEUM을 보유했는지 송금 전에 확인한다.
 - 첫 번째 테스트 계정에서 두 번째 테스트 계정으로 정확히 0.1 IEUM을 전송해 실제 입금을 확인한다.
 - `eth_sendTransaction`이 HTTP 200이어도 JSON-RPC `error`가 있으면 즉시 실패한다.

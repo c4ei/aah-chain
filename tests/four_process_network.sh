@@ -34,18 +34,14 @@ start_node() {
   local rpc_port="$((9200 + index))"
   local args=(
     server
+    --git_action_test
     --validator-index "$index"
-    --allow-insecure-test-keys
     --port "$p2p_port"
     --rpc-port "$rpc_port"
     --rpc-data-dir "$test_root/node-$index/ledger"
     --node-key "$test_root/node-$index/keys/p2p_identity.key"
     --validator-key "$test_root/node-$index/keys/consensus_signing.key"
     --validators-config "$test_root/node-$index/validators.json"
-    --no-default-bootstrap
-    --propose-timeout-ms 1500
-    --prevote-timeout-ms 1500
-    --precommit-timeout-ms 1500
   )
 
   # 각 노드를 빈 임시 작업 디렉터리에서 실행한다. 저장소의 운영용

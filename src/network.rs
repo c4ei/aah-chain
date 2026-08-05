@@ -126,6 +126,8 @@ impl ValidatorRegistration {
 #[derive(Clone, Debug)]
 pub struct NetworkConfig {
     pub listen_port: u16,
+    /// CI 테스트에서는 호스트의 LAN/Docker 인터페이스를 사용하지 않습니다.
+    pub loopback_only: bool,
     pub bootstrap_peers: Vec<Multiaddr>,
     /// NAT 포트포워딩 뒤에서 다른 피어에게 알릴 공개 주소입니다.
     pub external_addresses: Vec<Multiaddr>,
@@ -139,6 +141,7 @@ impl Default for NetworkConfig {
     fn default() -> Self {
         Self {
             listen_port: 7001,
+            loopback_only: false,
             bootstrap_peers: Vec::new(),
             external_addresses: Vec::new(),
             identity_key: None,
@@ -504,6 +507,7 @@ impl P2pNode {
         let config = self.config;
         let max_message_bytes = config.max_message_bytes;
         let idle_timeout = config.idle_timeout;
+        let loopback_only = config.loopback_only;
 
         let identity_key = config
             .identity_key
@@ -578,7 +582,12 @@ impl P2pNode {
         let local_peer_id = *swarm.local_peer_id();
         let local_network = LocalNetworkView::discover();
         local_network.log_summary();
-        let listen: Multiaddr = format!("/ip4/0.0.0.0/udp/{}/quic-v1", config.listen_port)
+        let listen_ip = if loopback_only {
+            "127.0.0.1"
+        } else {
+            "0.0.0.0"
+        };
+        let listen: Multiaddr = format!("/ip4/{listen_ip}/udp/{}/quic-v1", config.listen_port)
             .parse()
             .map_err(|error| format!("리스닝 주소 오류: {error}"))?;
         swarm.listen_on(listen).map_err(|error| error.to_string())?;
@@ -590,7 +599,7 @@ impl P2pNode {
         // 설정에는 /dns4/도메인 주소를 유지하되 QUIC dial 직전에 IPv4로 변환합니다.
         let bootstrap_addresses = config.bootstrap_peers.clone();
         for address in config.bootstrap_peers {
-            add_bootstrap_address(&mut swarm, address, local_peer_id).await?;
+            add_bootstrap_address(&mut swarm, address, local_peer_id, loopback_only).await?;
         }
         let _ = swarm.behaviour_mut().kademlia.bootstrap();
 
@@ -707,6 +716,7 @@ impl P2pNode {
                             event_tx: &event_tx,
                             local_network: &local_network,
                             max_message_bytes,
+                            loopback_only,
                         };
                         if let Err(error) = handle_swarm_event(
                             &mut swarm,
@@ -731,6 +741,7 @@ async fn add_bootstrap_address(
     swarm: &mut libp2p::Swarm<IeumBehaviour>,
     address: Multiaddr,
     local_peer_id: PeerId,
+    loopback_only: bool,
 ) -> Result<(), String> {
     let original_address = address.clone();
     let resolved_addresses = resolve_dns4_addresses(&address).await?;
@@ -743,16 +754,19 @@ async fn add_bootstrap_address(
             .behaviour_mut()
             .kademlia
             .add_address(&peer_id, resolved_address.clone());
-        swarm
-            .behaviour_mut()
-            .autonat
-            .add_server(peer_id, Some(resolved_address.clone()));
+        if !loopback_only {
+            swarm
+                .behaviour_mut()
+                .autonat
+                .add_server(peer_id, Some(resolved_address.clone()));
+        }
         resolved_address.push(Protocol::P2p(peer_id));
         crate::log_info!("[P2P 접속 시도] {original_address} -> {resolved_address}");
         swarm.dial(resolved_address.clone()).map_err(|error| {
             format!("[P2P 접속 시작 실패] 주소: {original_address}, 오류: {error}")
         })?;
-        if peer_id != local_peer_id
+        if !loopback_only
+            && peer_id != local_peer_id
             && !resolved_address
                 .iter()
                 .any(|protocol| matches!(protocol, Protocol::P2pCircuit))
@@ -858,6 +872,7 @@ struct SwarmEventContext<'a> {
     event_tx: &'a mpsc::Sender<NetworkEvent>,
     local_network: &'a LocalNetworkView,
     max_message_bytes: usize,
+    loopback_only: bool,
 }
 
 async fn handle_swarm_event(
@@ -872,6 +887,7 @@ async fn handle_swarm_event(
         event_tx,
         local_network,
         max_message_bytes,
+        loopback_only,
     } = context;
 
     match event {
@@ -910,6 +926,9 @@ async fn handle_swarm_event(
             }
         }
         SwarmEvent::Behaviour(IeumBehaviourEvent::Mdns(mdns::Event::Discovered(peers))) => {
+            if loopback_only {
+                return Ok(());
+            }
             for (peer, address) in peers {
                 // 다른 로컬 프로세스가 광고한 loopback·Docker bridge 주소는 그 프로세스
                 // 바깥에서 같은 PeerId를 보장하지 않습니다. 이를 Kademlia에 넣으면
@@ -931,6 +950,9 @@ async fn handle_swarm_event(
             }
         }
         SwarmEvent::Behaviour(IeumBehaviourEvent::Mdns(mdns::Event::Expired(peers))) => {
+            if loopback_only {
+                return Ok(());
+            }
             for (peer, _) in peers {
                 swarm.behaviour_mut().gossipsub.remove_explicit_peer(&peer);
                 same_lan_peers.remove(&peer);

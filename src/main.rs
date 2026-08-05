@@ -218,6 +218,10 @@ enum ValidatorKeyCommand {
 
 #[derive(Debug, ClapArgs)]
 struct NodeArgs {
+    /// GitHub Actions용 격리 실행. 루프백 P2P, 고정 개발 키와 짧은 합의 제한 시간을 사용합니다.
+    #[arg(long = "git_action_test", default_value_t = false)]
+    git_action_test: bool,
+
     /// QUIC UDP 리스닝 포트
     #[arg(long, default_value_t = 7001)]
     port: u16,
@@ -315,6 +319,7 @@ struct ClientArgs {
 
 fn default_node_args() -> NodeArgs {
     NodeArgs {
+        git_action_test: false,
         port: 7001,
         max_message_bytes: 2_097_152,
         rpc_port: 8989,
@@ -450,6 +455,17 @@ async fn main() -> Result<(), String> {
             };
         }
         Some(Command::Server(mut args)) => {
+            if args.git_action_test {
+                log_info!(
+                    "[테스트 모드] GitHub Actions용 격리 네트워크입니다. 고정 개발 키를 사용하며 실제 자산을 넣지 마세요."
+                );
+                args.rpc_host = IpAddr::V4(Ipv4Addr::LOCALHOST);
+                args.allow_insecure_test_keys = true;
+                args.no_default_bootstrap = true;
+                args.propose_timeout_ms = 1_500;
+                args.prevote_timeout_ms = 1_500;
+                args.precommit_timeout_ms = 1_500;
+            }
             if args.node_key == Path::new("data/node.key") {
                 args.node_key = PathBuf::from("data/keys/p2p_identity.key");
             }
@@ -460,6 +476,9 @@ async fn main() -> Result<(), String> {
             ("서버", args, peers, false)
         }
         Some(Command::Client(mut client)) => {
+            if client.node.git_action_test {
+                return Err("--git_action_test는 server 명령에서만 사용할 수 있습니다.".into());
+            }
             if client.node.node_key == Path::new("data/node.key") {
                 client.node.node_key = PathBuf::from("data/client.node.key");
             }
@@ -521,6 +540,7 @@ async fn main() -> Result<(), String> {
         .collect();
     let config = NetworkConfig {
         listen_port: args.port,
+        loopback_only: args.git_action_test,
         bootstrap_peers,
         external_addresses,
         identity_key: Some(identity_key),
@@ -532,8 +552,29 @@ async fn main() -> Result<(), String> {
     let startup_peers = config.bootstrap_peers.clone();
     let (peer_id, commands, mut events) = P2pNode::new(config).run().await?;
 
-    let genesis: GenesisConfig = serde_json::from_str(include_str!("../config/genesis.json"))
-        .map_err(|error| format!("운영망 제네시스 설정 오류: {error}"))?;
+    let mut genesis: GenesisConfig =
+        serde_json::from_str(include_str!("../config/genesis.json"))
+            .map_err(|error| format!("운영망 제네시스 설정 오류: {error}"))?;
+    if args.git_action_test {
+        genesis.initial_balances.extend([
+            (
+                "0xB0E5863D0DDf7e105e409Fee0eCC0123a362e14B".into(),
+                1_000_000_000_000_000_000,
+            ),
+            (
+                "0x3252b7b65e50B54508974dB8d634134B0bd6be90".into(),
+                1_000_000_000_000_000_000,
+            ),
+            (
+                "0xf0DCB0Ea878057Ff5C78C4737023f900ECe09e7B".into(),
+                1_000_000_000_000_000_000,
+            ),
+            (
+                "0xD5ac7674AC15E3Df0B7D737CF8Cb8f2Ea713F329".into(),
+                1_000_000_000_000_000_000,
+            ),
+        ]);
+    }
     genesis.validate()?;
     let rpc_config = RpcConfig {
         listen_ip: args.rpc_host,
@@ -1942,6 +1983,25 @@ fn load_bootstrap_peers(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn git_action_test_flag_requires_server_subcommand() {
+        let args = Args::try_parse_from([
+            "ieum-chain",
+            "server",
+            "--git_action_test",
+            "--validator-index",
+            "3",
+        ])
+        .unwrap();
+        let Some(Command::Server(node)) = args.command else {
+            panic!("server 명령이어야 합니다.");
+        };
+        assert!(node.git_action_test);
+        assert_eq!(node.validator_index, 3);
+
+        assert!(Args::try_parse_from(["ieum-chain", "--git_action_test"]).is_err());
+    }
 
     #[test]
     fn bootstrap_config_accepts_address_array() {
