@@ -61,6 +61,7 @@ impl GenesisConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::account::AccountWallet;
 
     #[test]
     fn bundled_genesis_includes_transfer_test_balance() {
@@ -72,14 +73,22 @@ mod tests {
             .iter()
             .map(|(_, value)| *value)
             .sum();
-        assert_eq!(total, 80_100u128 * 10u128.pow(18));
-        assert!(genesis.initial_balances.iter().any(|(address, balance)| {
-            address.eq_ignore_ascii_case("0x475e2f4e40Dbd34370e4fce61ddFF5Ff1F2eA817")
-                && *balance == 100u128 * 10u128.pow(18)
-        }));
+        assert_eq!(total, 80_104u128 * 10u128.pow(18));
+        for (key_byte, address) in (42u8..=45).zip([
+            "0xB0E5863D0DDf7e105e409Fee0eCC0123a362e14B",
+            "0x3252b7b65e50B54508974dB8d634134B0bd6be90",
+            "0xf0DCB0Ea878057Ff5C78C4737023f900ECe09e7B",
+            "0xD5ac7674AC15E3Df0B7D737CF8Cb8f2Ea713F329",
+        ]) {
+            let wallet = AccountWallet::from_private_key([key_byte; 32]).unwrap();
+            assert!(wallet.address().eq_ignore_ascii_case(address));
+            assert!(genesis.initial_balances.iter().any(|(candidate, balance)| {
+                candidate.eq_ignore_ascii_case(address) && *balance == 10u128.pow(18)
+            }));
+        }
         assert_eq!(
             genesis.genesis_hash().unwrap(),
-            "657ce0cfeb8ad38d88a23711ec2664e5e1033aa8ffd5bb648a02ca0f348a9e1a"
+            "9cfb8866763ced88e3b66778013314017783d4cbc6e6cd735cf4fa118abcd944"
         );
     }
 }

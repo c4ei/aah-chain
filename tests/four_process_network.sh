@@ -158,7 +158,7 @@ print(result)
 ' <<<"$faucet_response"
 )"
 
-recipient="0x1111111111111111111111111111111111111111"
+recipient="0x3252b7b65e50B54508974dB8d634134B0bd6be90"
 transfer_value="0x16345785d8a0000" # 0.1 IEUM
 
 for index in 1 2 3 4; do
@@ -173,7 +173,7 @@ response = json.loads(raw)
 if "error" in response:
     raise SystemExit(f"노드 {index} faucet 잔액 조회 실패: {response['error']}")
 balance = int(response.get("result", "0x0"), 16)
-required = 10**20  # 100 IEUM
+required = 10**18  # 1 IEUM
 if balance < required:
     raise SystemExit(
         f"노드 {index} faucet 잔액 부족: address={faucet}, "
