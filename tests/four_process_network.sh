@@ -208,6 +208,7 @@ print(result)
 
 recipient="0x3252b7b65e50B54508974dB8d634134B0bd6be90"
 transfer_value="0x16345785d8a0000" # 0.1 IEUM
+transfer_amount_wei=100000000000000000
 
 for index in 1 2 3 4; do
   port="$((9200 + index))"
@@ -230,6 +231,38 @@ if balance < required:
 print(f"노드 {index} faucet 확인: {faucet}, balance={balance} wei")
 PY
 done
+
+# 수신 주소는 고정 개발 제네시스에서 이미 잔액을 보유할 수 있다. 송금 후 절대
+# 잔액을 0.1 IEUM으로 가정하지 않고, 네 노드가 관측한 송금 전 잔액을 기준으로
+# 정확히 0.1 IEUM 증가했는지 확인한다.
+initial_recipient_balances=()
+for index in 1 2 3 4; do
+  port="$((9200 + index))"
+  balance_response="$(rpc "$port" eth_getBalance "[\"$recipient\",\"latest\"]")"
+  initial_recipient_balance="$(python3 - "$index" "$recipient" "$balance_response" <<'PY'
+import json
+import sys
+
+index, recipient, raw = sys.argv[1:]
+response = json.loads(raw)
+if "error" in response:
+    raise SystemExit(f"노드 {index} 수신 주소 잔액 조회 실패: {response['error']}")
+print(int(response.get("result", "0x0"), 16))
+PY
+)"
+  initial_recipient_balances+=("$initial_recipient_balance")
+done
+
+if [[ "${initial_recipient_balances[0]}" != "${initial_recipient_balances[1]}" ]] ||
+   [[ "${initial_recipient_balances[1]}" != "${initial_recipient_balances[2]}" ]] ||
+   [[ "${initial_recipient_balances[2]}" != "${initial_recipient_balances[3]}" ]]; then
+  echo "송금 전 수신 주소 잔액이 노드별로 다릅니다: balances=${initial_recipient_balances[*]}"
+  dump_logs
+  exit 1
+fi
+
+expected_recipient_balance="$((initial_recipient_balances[0] + transfer_amount_wei))"
+echo "수신 주소 송금 전 잔액 확인: balance=${initial_recipient_balances[0]} wei, expectedAfter=$expected_recipient_balance wei"
 
 send_response="$(rpc 9202 eth_sendTransaction \
   "[{
@@ -325,7 +358,10 @@ PY
      [[ "${roots[0]}" == "${roots[1]}" ]] &&
      [[ "${roots[1]}" == "${roots[2]}" ]] &&
      [[ "${roots[2]}" == "${roots[3]}" ]] &&
-     [[ "${recipient_balances[*]}" == "100000000000000000 100000000000000000 100000000000000000 100000000000000000" ]]; then
+     [[ "${recipient_balances[0]}" == "$expected_recipient_balance" ]] &&
+     [[ "${recipient_balances[1]}" == "$expected_recipient_balance" ]] &&
+     [[ "${recipient_balances[2]}" == "$expected_recipient_balance" ]] &&
+     [[ "${recipient_balances[3]}" == "$expected_recipient_balance" ]]; then
     echo "4-process BFT passed: heights=${heights[*]}, stateRoot=${roots[0]}, recipientBalance=${recipient_balances[0]}"
     exit 0
   fi
