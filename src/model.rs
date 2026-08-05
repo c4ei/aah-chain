@@ -10,10 +10,66 @@ pub struct Transaction {
     pub from: Address,
     pub to: Address,
     /// 1 IEUM = 10^18 최소 단위이므로 전체 발행량을 안전하게 담도록 u128을 사용합니다.
+    #[serde(with = "decimal_u128")]
     pub amount: u128,
+    #[serde(with = "decimal_u128")]
     pub fee: u128,
     pub nonce: u64,
     pub signature: String,
+}
+
+/// JSON 구현의 128비트 숫자 지원 여부와 무관한 고정 표현입니다.
+/// 새 데이터는 십진 문자열로 쓰고, 기존 원장/P2P JSON의 숫자도 계속 읽습니다.
+mod decimal_u128 {
+    use serde::de::{self, Visitor};
+    use serde::{Deserializer, Serializer};
+    use std::fmt;
+
+    pub fn serialize<S>(value: &u128, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(&value.to_string())
+    }
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<u128, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        struct DecimalU128Visitor;
+
+        impl Visitor<'_> for DecimalU128Visitor {
+            type Value = u128;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                formatter.write_str("u128 범위의 십진 문자열 또는 음수가 아닌 정수")
+            }
+
+            fn visit_u64<E>(self, value: u64) -> Result<Self::Value, E> {
+                Ok(u128::from(value))
+            }
+
+            fn visit_u128<E>(self, value: u128) -> Result<Self::Value, E> {
+                Ok(value)
+            }
+
+            fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
+            where
+                E: de::Error,
+            {
+                value.parse::<u128>().map_err(E::custom)
+            }
+
+            fn visit_string<E>(self, value: String) -> Result<Self::Value, E>
+            where
+                E: de::Error,
+            {
+                self.visit_str(&value)
+            }
+        }
+
+        deserializer.deserialize_any(DecimalU128Visitor)
+    }
 }
 
 impl Transaction {

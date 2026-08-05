@@ -25,6 +25,9 @@ pub const BLOCK_TOPIC: &str = "ieum-chain/blocks/1";
 pub const CONSENSUS_TOPIC: &str = "ieum-chain/consensus/1";
 pub const SYNC_TOPIC: &str = "ieum-chain/sync/2";
 pub const COMMUNICATION_PROTOCOL: &str = "/ieum-chain/communication/1";
+const COMPRESSED_WIRE_MAGIC: &[u8; 6] = b"IEUMZ\x01";
+const COMPRESSION_THRESHOLD_BYTES: usize = 1_024;
+const WIRE_HEADER_BYTES: usize = COMPRESSED_WIRE_MAGIC.len() + 4;
 
 #[derive(Clone, Debug, Default)]
 struct LocalNetworkView {
@@ -860,9 +863,12 @@ fn publish_to_topic(
     topic: gossipsub::IdentTopic,
     message: &WireMessage,
 ) {
-    let Ok(bytes) = serde_json::to_vec(message) else {
-        crate::log_error!("P2P 메시지 직렬화 실패");
-        return;
+    let bytes = match encode_wire_message(message) {
+        Ok(bytes) => bytes,
+        Err(error) => {
+            crate::log_error!("P2P 메시지 직렬화 실패: {error}");
+            return;
+        }
     };
     if let Err(error) = swarm.behaviour_mut().gossipsub.publish(topic, bytes) {
         let message = error.to_string();
@@ -876,6 +882,54 @@ fn publish_to_topic(
             crate::logger::write_repeated_error(&format!("P2P 메시지 전파 실패: {error}"));
         }
     }
+}
+
+/// 작은 메시지는 기존 JSON 그대로 유지하고, 큰 JSON만 zstd로 압축합니다.
+/// 헤더에는 압축 해제 후 길이를 넣어 할당 전에 상한을 검사합니다.
+fn encode_wire_message(message: &WireMessage) -> Result<Vec<u8>, String> {
+    let json = serde_json::to_vec(message).map_err(|error| error.to_string())?;
+    if json.len() < COMPRESSION_THRESHOLD_BYTES || json.len() > u32::MAX as usize {
+        return Ok(json);
+    }
+    let compressed = zstd::bulk::compress(&json, 3).map_err(|error| error.to_string())?;
+    if WIRE_HEADER_BYTES + compressed.len() >= json.len() {
+        return Ok(json);
+    }
+    let mut framed = Vec::with_capacity(WIRE_HEADER_BYTES + compressed.len());
+    framed.extend_from_slice(COMPRESSED_WIRE_MAGIC);
+    framed.extend_from_slice(&(json.len() as u32).to_be_bytes());
+    framed.extend_from_slice(&compressed);
+    Ok(framed)
+}
+
+fn decode_wire_message(bytes: &[u8], max_message_bytes: usize) -> Result<WireMessage, String> {
+    let json = if bytes.starts_with(COMPRESSED_WIRE_MAGIC) {
+        if bytes.len() < WIRE_HEADER_BYTES {
+            return Err("압축 P2P 메시지 헤더가 잘렸습니다.".into());
+        }
+        let declared = u32::from_be_bytes(
+            bytes[COMPRESSED_WIRE_MAGIC.len()..WIRE_HEADER_BYTES]
+                .try_into()
+                .map_err(|_| "압축 P2P 메시지 길이 헤더가 잘못되었습니다.")?,
+        ) as usize;
+        if declared > max_message_bytes {
+            return Err(format!(
+                "압축 해제 크기가 제한을 넘습니다: declared={declared}, max={max_message_bytes}"
+            ));
+        }
+        let decoded = zstd::bulk::decompress(&bytes[WIRE_HEADER_BYTES..], declared)
+            .map_err(|error| format!("zstd 압축 해제 실패: {error}"))?;
+        if decoded.len() != declared {
+            return Err(format!(
+                "압축 해제 크기가 헤더와 다릅니다: declared={declared}, actual={}",
+                decoded.len()
+            ));
+        }
+        decoded
+    } else {
+        bytes.to_vec()
+    };
+    serde_json::from_slice(&json).map_err(|error| format!("json={error}"))
 }
 
 struct SwarmEventContext<'a> {
@@ -1023,12 +1077,12 @@ async fn handle_swarm_event(
                 let _ = swarm.disconnect_peer_id(propagation_source);
                 return Err("최대 크기를 넘는 메시지를 보낸 피어를 차단했습니다.".into());
             }
-            let decoded: WireMessage = match serde_json::from_slice(&message.data) {
+            let decoded: WireMessage = match decode_wire_message(&message.data, max_message_bytes) {
                 Ok(value) => value,
                 Err(error) => {
                     guard.penalize(&peer_key, 25);
                     return Err(format!(
-                        "해석할 수 없는 메시지입니다: peer={message_source}, topic={}, bytes={}, json={error}",
+                        "해석할 수 없는 메시지입니다: peer={message_source}, topic={}, bytes={}, detail={error}",
                         message.topic,
                         message.data.len()
                     ));
@@ -1363,13 +1417,57 @@ mod connection_log_tests {
         let proposal = SignedProposal::new(1, 0, &proposer, block);
         let wire = WireMessage::Proposal(proposal.clone());
 
-        let bytes = serde_json::to_vec(&wire).unwrap();
-        let decoded: WireMessage = serde_json::from_slice(&bytes).unwrap();
+        let bytes = encode_wire_message(&wire).unwrap();
+        let decoded = decode_wire_message(&bytes, 2 * 1024 * 1024).unwrap();
 
         match decoded {
             WireMessage::Proposal(decoded) => assert_eq!(decoded, proposal),
             _ => panic!("제안 WireMessage가 다른 종류로 역직렬화되었습니다."),
         }
+    }
+
+    #[test]
+    fn large_compressible_wire_message_uses_zstd_frame() {
+        // Proposal의 실제 길이는 키/서명 표현이 바뀌면 압축 임계값의 양쪽으로
+        // 이동할 수 있습니다. 압축 정책은 크기가 확실하고 반복 가능한 payload로
+        // 별도 검증해 u128 왕복 테스트와 결합하지 않습니다.
+        let wire = WireMessage::UpdateAvailable {
+            version: "a".repeat(COMPRESSION_THRESHOLD_BYTES * 2),
+        };
+
+        let bytes = encode_wire_message(&wire).unwrap();
+        assert!(bytes.starts_with(COMPRESSED_WIRE_MAGIC));
+
+        let decoded = decode_wire_message(&bytes, 2 * 1024 * 1024).unwrap();
+        match decoded {
+            WireMessage::UpdateAvailable { version } => {
+                assert_eq!(version, "a".repeat(COMPRESSION_THRESHOLD_BYTES * 2));
+            }
+            _ => panic!("압축 WireMessage가 다른 종류로 역직렬화되었습니다."),
+        }
+    }
+
+    #[test]
+    fn transaction_u128_is_a_decimal_string_and_legacy_number_is_accepted() {
+        let sender = Wallet::from_seed([41; 32]);
+        let receiver = Wallet::from_seed([42; 32]);
+        let transaction = sender.sign_transfer(receiver.address(), u128::MAX, 21_000, 0);
+        let json = serde_json::to_string(&transaction).unwrap();
+        assert!(json.contains(&format!("\"amount\":\"{}\"", u128::MAX)));
+
+        let legacy = json.replace("\"fee\":\"21000\"", "\"fee\":21000");
+        let decoded: Transaction = serde_json::from_str(&legacy).unwrap();
+        assert_eq!(decoded.amount, u128::MAX);
+        assert_eq!(decoded.fee, 21_000);
+    }
+
+    #[test]
+    fn compressed_message_declared_size_is_bounded_before_decompression() {
+        let mut malicious = COMPRESSED_WIRE_MAGIC.to_vec();
+        malicious.extend_from_slice(&10_000_u32.to_be_bytes());
+        malicious.extend_from_slice(&[0; 8]);
+        let error = decode_wire_message(&malicious, 1_000).unwrap_err();
+        assert!(error.contains("제한을 넘습니다"));
     }
 
     #[test]
