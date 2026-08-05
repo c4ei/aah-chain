@@ -715,6 +715,9 @@ async fn main() -> Result<(), String> {
     // 비제안자 RPC로 들어온 거래는 제안자가 받을 때까지 주기적으로 재전파하되,
     // 매 consensus tick마다 같은 payload를 쏟아내지는 않습니다.
     let mut announced_transactions = std::collections::HashMap::<String, std::time::Instant>::new();
+    // 거래가 없는 동안에는 빈 블록을 만들지 않는다. 첫 거래나 제안이 도착했을 때
+    // 노드 시작 시점의 만료된 deadline을 쓰지 않도록 활성 전환을 추적한다.
+    let mut consensus_was_active = false;
     // 연결 직후에도 별도로 전송하므로 주기 공지는 복구용 저빈도 heartbeat만 사용합니다.
     let mut registration_tick = tokio::time::interval(Duration::from_secs(60));
     let auto_update = ieum_chain::updater::AutoUpdateConfig::discover()?;
@@ -800,8 +803,12 @@ async fn main() -> Result<(), String> {
                 let consensus_is_active = local_is_validator
                     && (consensus.phase() != ieum_chain::ConsensusPhase::Propose
                         || rpc.has_pending_transactions()?);
+                let timeout_now = std::time::Instant::now();
+                if consensus_is_active && !consensus_was_active {
+                    consensus.restart_phase_timeout(timeout_now);
+                }
                 if consensus_is_active
-                    && consensus.timeout_if_due(std::time::Instant::now())?
+                    && consensus.timeout_if_due(timeout_now)?
                 {
                     rpc.restore_transactions(timed_out_transactions)?;
                     print!(
@@ -810,6 +817,7 @@ async fn main() -> Result<(), String> {
                     );
                     io::stdout().flush().map_err(|error| error.to_string())?;
                 }
+                consensus_was_active = consensus_is_active;
                 if !is_client && local_is_validator {
                     upgrades.ensure_supported(
                         consensus.chain.tip_height().saturating_add(1),

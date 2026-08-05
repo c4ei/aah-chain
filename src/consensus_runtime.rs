@@ -284,6 +284,12 @@ impl ConsensusRuntime {
         Ok(true)
     }
 
+    /// 거래가 없는 동안 합의 라운드를 쉬었다가 다시 활성화할 때, 노드 시작 시점의
+    /// 이미 만료된 deadline을 사용하지 않도록 현재 단계 제한 시간을 새로 시작합니다.
+    pub fn restart_phase_timeout(&mut self, now: Instant) {
+        self.deadline = now + self.timeouts.for_phase(self.consensus.phase());
+    }
+
     pub fn pending_transactions(&self) -> Vec<crate::model::Transaction> {
         self.pending
             .as_ref()
@@ -642,5 +648,38 @@ mod tests {
             ConsensusPhase::Precommit | ConsensusPhase::Finalized
         ));
         assert!(!outbound.is_empty());
+    }
+
+    #[test]
+    fn idle_round_timeout_can_be_restarted_when_work_arrives() {
+        let keys: Vec<_> = (1..=4)
+            .map(|value| Wallet::from_seed([value; 32]))
+            .collect();
+        let validators = keys
+            .iter()
+            .map(|key| Validator::new(key.address(), 100))
+            .collect();
+        let chain = Blockchain::new(vec![(keys[0].address(), 1_000)]);
+        let mut runtime = ConsensusRuntime::new(
+            chain,
+            validators,
+            Wallet::from_seed([1; 32]),
+            Duration::from_millis(10),
+        )
+        .unwrap();
+        let work_arrived = Instant::now() + Duration::from_secs(1);
+
+        runtime.restart_phase_timeout(work_arrived);
+
+        assert!(
+            !runtime
+                .timeout_if_due(work_arrived + Duration::from_millis(9))
+                .unwrap()
+        );
+        assert!(
+            runtime
+                .timeout_if_due(work_arrived + Duration::from_millis(10))
+                .unwrap()
+        );
     }
 }

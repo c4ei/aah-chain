@@ -1025,9 +1025,13 @@ async fn handle_swarm_event(
             }
             let decoded: WireMessage = match serde_json::from_slice(&message.data) {
                 Ok(value) => value,
-                Err(_) => {
+                Err(error) => {
                     guard.penalize(&peer_key, 25);
-                    return Err("해석할 수 없는 메시지입니다.".into());
+                    return Err(format!(
+                        "해석할 수 없는 메시지입니다: peer={message_source}, topic={}, bytes={}, json={error}",
+                        message.topic,
+                        message.data.len()
+                    ));
                 }
             };
             // 여기서는 외부 포맷과 크기까지만 검사합니다.
