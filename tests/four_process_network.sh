@@ -2,6 +2,7 @@
 set -euo pipefail
 
 binary="${1:-target/release/ieum-chain}"
+binary="$(realpath "$binary")"
 test_root="$(mktemp -d)"
 pids=()
 
@@ -47,11 +48,19 @@ start_node() {
     --precommit-timeout-ms 1500
   )
 
+  # 각 노드를 빈 임시 작업 디렉터리에서 실행한다. 저장소의 운영용
+  # config/network.json·config/update.json을 읽지 않으므로 CI 테스트가
+  # 운영 DNS, 공개 광고 주소 또는 자동 업데이트에 접근하지 않는다.
+  mkdir -p "$test_root/node-$index"
+
   if [[ -n "$peer" ]]; then
     args+=(--peer "$peer")
   fi
 
-  "$binary" "${args[@]}" >"$test_root/node-$index.log" 2>&1 &
+  (
+    cd "$test_root/node-$index"
+    exec "$binary" "${args[@]}"
+  ) >"$test_root/node-$index.log" 2>&1 &
   pids+=("$!")
 }
 
