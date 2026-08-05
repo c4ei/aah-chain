@@ -350,3 +350,10 @@
   `db/ieum-state.legacy-v1.json`으로 원본 보존
 - backup 전에 WAL checkpoint를 실행하고 `ieum-state.sqlite3`를 복사하도록 변경
 - DB schema/generation metadata 및 prefix scan 테스트 추가
+## 0.21.5 - 2026-08-05
+
+- Windows Normal용 SQLite 정적 링크 수정
+- Normal relay 최소 1시간 가동 자격 추가
+- 높이 100과 2026-08-10 00:00 KST를 모두 충족하는 보상 활성화 조건 추가
+- 2026~2040 노드 보상 총량 210,000,000 IEUM 및 매년 반감 예산 추가
+- 메인 4노드 1.5배 가중치와 기존 전송 수수료 20% 재단 배분 정책 문서화

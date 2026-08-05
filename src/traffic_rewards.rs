@@ -216,6 +216,9 @@ pub struct RelayReceipt {
     pub message_id: String,
     pub payload_bytes: u32,
     pub observed_at: u64,
+    /// 해당 relay를 독립 피어가 처음 관측한 시각입니다.
+    #[serde(default)]
+    pub relay_started_at: u64,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -226,6 +229,8 @@ pub struct RewardPolicy {
     pub maximum_receipts_per_verifier: u32,
     pub maximum_points_per_node: u64,
     pub winner_count: usize,
+    /// 단순 실행 직후 보상을 받는 Sybil 공격을 막는 최소 연속 가동 시간입니다.
+    pub minimum_uptime_seconds: u64,
 }
 
 impl Default for RewardPolicy {
@@ -237,6 +242,7 @@ impl Default for RewardPolicy {
             maximum_receipts_per_verifier: 200,
             maximum_points_per_node: 10_000,
             winner_count: 10,
+            minimum_uptime_seconds: 60 * 60,
         }
     }
 }
@@ -255,6 +261,10 @@ impl RewardPolicy {
             || self.winner_count == 0
         {
             return Err("보상 검증자·상한·당첨자 수 설정이 올바르지 않습니다.".into());
+        }
+        if self.minimum_uptime_seconds < 60 * 60 || self.minimum_uptime_seconds > self.epoch_seconds
+        {
+            return Err("최소 가동 시간은 1시간 이상이며 보상 주기 이하여야 합니다.".into());
         }
         Ok(())
     }
@@ -310,6 +320,12 @@ impl ContributionLedger {
         }
         if receipt.payload_bytes == 0 || receipt.message_id.trim().is_empty() {
             return Err("빈 메시지 중계는 인정하지 않습니다.".into());
+        }
+        if receipt.relay_started_at == 0
+            || receipt.observed_at.saturating_sub(receipt.relay_started_at)
+                < self.policy.minimum_uptime_seconds
+        {
+            return Err("1시간 이상 연속 가동이 독립 피어에게 확인된 노드만 보상됩니다.".into());
         }
         validate_reward_address(&receipt.reward_address)?;
         let dedupe = (receipt.verifier_peer_id.clone(), receipt.message_id.clone());
@@ -508,6 +524,7 @@ mod tests {
                 message_id: format!("message-{index}"),
                 payload_bytes: 100,
                 observed_at: 2 * 24 * 60 * 60,
+                relay_started_at: 2 * 24 * 60 * 60 - 60 * 60,
             };
             assert!(ledger.record_validated(receipt.clone()).unwrap());
             assert!(!ledger.record_validated(receipt).unwrap());

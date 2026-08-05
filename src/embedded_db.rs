@@ -24,7 +24,10 @@ struct Sqlite3Stmt {
     _private: [u8; 0],
 }
 
-#[link(name = "sqlite3")]
+// MSVC에서 기본 `dylib` 링크는 `__imp_sqlite3_*` 심볼을 요구합니다.
+// 배포 바이너리는 DLL 없이 실행되도록 Windows에서 vcpkg 정적 SQLite를 연결합니다.
+#[cfg_attr(windows, link(name = "sqlite3", kind = "static"))]
+#[cfg_attr(not(windows), link(name = "sqlite3"))]
 unsafe extern "C" {
     fn sqlite3_open_v2(
         filename: *const c_char,
