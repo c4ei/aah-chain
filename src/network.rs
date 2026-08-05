@@ -1340,7 +1340,37 @@ fn format_duration(duration: Duration) -> String {
 #[cfg(test)]
 mod connection_log_tests {
     use super::*;
-    use crate::CommunicationKind;
+    use crate::{Block, CommunicationKind, SignedProposal, Wallet};
+
+    #[test]
+    fn p2p_proposal_with_u128_transaction_round_trips() {
+        let sender = Wallet::from_seed([31; 32]);
+        let receiver = Wallet::from_seed([32; 32]);
+        let proposer = Wallet::from_seed([33; 32]);
+        let transaction = sender.sign_transfer(
+            receiver.address(),
+            100_000_000_000_000_000_u128,
+            21_000_u128,
+            0,
+        );
+        let block = Block::new(
+            1,
+            Block::genesis().hash,
+            1_785_914_671,
+            proposer.address(),
+            vec![transaction],
+        );
+        let proposal = SignedProposal::new(1, 0, &proposer, block);
+        let wire = WireMessage::Proposal(proposal.clone());
+
+        let bytes = serde_json::to_vec(&wire).unwrap();
+        let decoded: WireMessage = serde_json::from_slice(&bytes).unwrap();
+
+        match decoded {
+            WireMessage::Proposal(decoded) => assert_eq!(decoded, proposal),
+            _ => panic!("제안 WireMessage가 다른 종류로 역직렬화되었습니다."),
+        }
+    }
 
     #[test]
     fn extracts_ipv4_from_multiaddr() {

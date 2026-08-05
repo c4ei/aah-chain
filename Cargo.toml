@@ -32,7 +32,9 @@ libp2p = { version = "0.56", features = [
 ] }
 rand_core = { version = "0.6", features = ["getrandom"] }
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+# P2P/원장 JSON에는 IEUM 최소 단위와 수수료를 담는 u128이 포함됩니다.
+# 기본 serde_json 역직렬화기는 u128을 거부하므로 숫자 정밀도 지원을 명시합니다.
+serde_json = { version = "1", features = ["arbitrary_precision"] }
 sha2 = "0.10"
 sha3 = "0.10"
 tokio = { version = "1.47", features = ["full"] }
