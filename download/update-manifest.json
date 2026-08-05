@@ -2,7 +2,7 @@
   "version": "0.21.7",
   "protocol_version": 2,
   "mandatory": false,
-  "published_at": 1785918780,
+  "published_at": 1785919623,
   "notes": "IEUM Chain v0.21.7 signed release",
   "artifacts": {
     "linux-x86_64": {
@@ -10,5 +10,5 @@
       "sha256": "799318e2c1511cef19daaf4806c10949f4c5db0cb66792aad5dc634df0ddd4da"
     }
   },
-  "signature": "dcb361da4726bc6e54bd5bc846644017145b8e4bac52c0332a364132f6bc0e2ded9c15bfc2547db56378639443a28a6cc3d52f5e632ff61dbcae673c0c627b0a"
+  "signature": "323d7cd921f93aa6d17b26b17524b381ada44ef876cfbfa5ba47b3dcf993e106742599afa7f4b0630a978ec7535d4cc7112fdd109dafdd3d9a0a2d056dfe2803"
 }

@@ -29,7 +29,8 @@ dump_logs() {
 
 start_node() {
   local index="$1"
-  local peer="${2:-}"
+  shift
+  local peers=("$@")
   local p2p_port="$((7200 + index))"
   local rpc_port="$((9200 + index))"
   local args=(
@@ -49,15 +50,42 @@ start_node() {
   # 운영 DNS, 공개 광고 주소 또는 자동 업데이트에 접근하지 않는다.
   mkdir -p "$test_root/node-$index"
 
-  if [[ -n "$peer" ]]; then
+  for peer in "${peers[@]}"; do
     args+=(--peer "$peer")
-  fi
+  done
 
   (
     cd "$test_root/node-$index"
     exec "$binary" "${args[@]}"
   ) >"$test_root/node-$index.log" 2>&1 &
   pids+=("$!")
+}
+
+wait_for_peer_id() {
+  local index="$1"
+  local pid="${pids[$((index - 1))]}"
+  local log="$test_root/node-$index.log"
+  local peer_id=""
+
+  for _ in $(seq 1 50); do
+    if ! kill -0 "$pid" 2>/dev/null; then
+      echo "노드 $index 프로세스가 PeerId 생성 전에 종료됐습니다." >&2
+      dump_logs >&2
+      return 1
+    fi
+
+    peer_id="$(sed -n 's/^IEUM 서버 노드 시작: //p' "$log" | head -1)"
+    if [[ -n "$peer_id" ]]; then
+      printf '%s\n' "$peer_id"
+      return 0
+    fi
+
+    sleep 0.2
+  done
+
+  echo "노드 $index의 PeerId를 확인하지 못했습니다." >&2
+  dump_logs >&2
+  return 1
 }
 
 rpc() {
@@ -99,46 +127,28 @@ wait_for_rpc() {
 }
 
 start_node 1
+peer_id_1="$(wait_for_peer_id 1)"
+peer_1="/ip4/127.0.0.1/udp/7201/quic-v1/p2p/$peer_id_1"
 
-peer_id=""
-for _ in $(seq 1 50); do
-  if ! kill -0 "${pids[0]}" 2>/dev/null; then
-    echo "노드 1이 PeerId 생성 전에 종료됐습니다."
-    dump_logs
-    exit 1
-  fi
+# 동기화는 서로 다른 두 피어의 동일한 tip/state root를 요구한다. 스타 토폴로지에서는
+# 리프가 합의 확정을 한 번 놓치면 교차검증할 두 번째 피어가 없어 복구할 수 없으므로,
+# 네 검증자를 완전 연결망으로 시작한다.
+start_node 2 "$peer_1"
+peer_id_2="$(wait_for_peer_id 2)"
+peer_2="/ip4/127.0.0.1/udp/7202/quic-v1/p2p/$peer_id_2"
 
-  peer_id="$(
-    sed -n 's/^IEUM 서버 노드 시작: //p' \
-      "$test_root/node-1.log" |
-      head -1
-  )"
+start_node 3 "$peer_1" "$peer_2"
+peer_id_3="$(wait_for_peer_id 3)"
+peer_3="/ip4/127.0.0.1/udp/7203/quic-v1/p2p/$peer_id_3"
 
-  if [[ -n "$peer_id" ]]; then
-    break
-  fi
-
-  sleep 0.2
-done
-
-if [[ -z "$peer_id" ]]; then
-  echo "노드 1의 PeerId를 확인하지 못했습니다."
-  dump_logs
-  exit 1
-fi
-
-bootstrap="/ip4/127.0.0.1/udp/7201/quic-v1/p2p/$peer_id"
-
-start_node 2 "$bootstrap"
-start_node 3 "$bootstrap"
-start_node 4 "$bootstrap"
+start_node 4 "$peer_1" "$peer_2" "$peer_3"
 
 for index in 1 2 3 4; do
   wait_for_rpc "$index"
 done
 
 # RPC listen은 P2P mesh보다 먼저 준비될 수 있다. 연결 전에 거래를 넣으면 노드별로
-# 서로 다른 round를 시작할 수 있으므로 hub 3개/leaf 1개 연결을 확인한 뒤 송금한다.
+# 서로 다른 round를 시작할 수 있으므로 모든 노드의 3개 연결을 확인한 뒤 송금한다.
 for _ in $(seq 1 120); do
   peer_counts=()
   topology_ready=true
@@ -157,9 +167,9 @@ for _ in $(seq 1 120); do
   if [[ "$topology_ready" == true ]] &&
      [[ "${#peer_counts[@]}" -eq 4 ]] &&
      [[ "${peer_counts[0]}" -ge 3 ]] &&
-     [[ "${peer_counts[1]}" -ge 1 ]] &&
-     [[ "${peer_counts[2]}" -ge 1 ]] &&
-     [[ "${peer_counts[3]}" -ge 1 ]]; then
+     [[ "${peer_counts[1]}" -ge 3 ]] &&
+     [[ "${peer_counts[2]}" -ge 3 ]] &&
+     [[ "${peer_counts[3]}" -ge 3 ]]; then
     echo "4노드 P2P 토폴로지 준비 완료: peers=${peer_counts[*]}"
     break
   fi
@@ -168,9 +178,9 @@ done
 
 if [[ "${#peer_counts[@]}" -ne 4 ]] ||
    [[ "${peer_counts[0]:-0}" -lt 3 ]] ||
-   [[ "${peer_counts[1]:-0}" -lt 1 ]] ||
-   [[ "${peer_counts[2]:-0}" -lt 1 ]] ||
-   [[ "${peer_counts[3]:-0}" -lt 1 ]]; then
+   [[ "${peer_counts[1]:-0}" -lt 3 ]] ||
+   [[ "${peer_counts[2]:-0}" -lt 3 ]] ||
+   [[ "${peer_counts[3]:-0}" -lt 3 ]]; then
   echo "4노드 P2P 토폴로지가 60초 안에 준비되지 않았습니다: peers=${peer_counts[*]:-확인불가}"
   dump_logs
   exit 1
@@ -324,5 +334,6 @@ PY
 done
 
 echo "4프로세스 BFT 합의가 제한 시간 안에 완료되지 않았습니다."
+echo "마지막 관측: heights=${heights[*]:-확인불가}, roots=${roots[*]:-확인불가}, recipientBalances=${recipient_balances[*]:-확인불가}"
 dump_logs
 exit 1
