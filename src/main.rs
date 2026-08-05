@@ -126,7 +126,7 @@ enum NetworkCommandConfig {
 enum RewardCommand {
     /// 이 노드의 영구 보상 주소를 출력합니다.
     Address {
-        #[arg(long, default_value = "data/reward.key")]
+        #[arg(long, default_value = "data/keys/node_reward_signing.key")]
         key: PathBuf,
     },
     /// 보상 잔액을 다른 IEUM 지갑으로 서명 전송합니다.
@@ -139,7 +139,7 @@ enum RewardCommand {
         /// 사람이 읽는 IEUM 단위. 기본 0.000001 IEUM
         #[arg(long, default_value = "0.000001")]
         fee: String,
-        #[arg(long, default_value = "data/reward.key")]
+        #[arg(long, default_value = "data/keys/node_reward_signing.key")]
         key: PathBuf,
         #[arg(long, default_value_t = 8989)]
         rpc_port: u16,
@@ -161,7 +161,7 @@ enum NodeCommand {
     /// 영구 노드 키를 읽거나 생성하고 대응하는 libp2p PeerId를 출력합니다.
     PeerId {
         /// 읽거나 처음 한 번 생성할 영구 노드 키
-        #[arg(long, default_value = "data/server.node.key")]
+        #[arg(long, default_value = "data/keys/p2p_identity.key")]
         key: PathBuf,
     },
     /// 서버 신원 키는 보존하고 원장만 백업한 뒤 비워 재동기화합니다.
@@ -177,13 +177,13 @@ enum ValidatorKeyCommand {
     /// 운영체제 난수로 검증자 개인 seed 파일을 안전하게 생성합니다.
     Generate {
         /// 생성할 개인키 파일
-        #[arg(long, default_value = "config/validator.key")]
+        #[arg(long, default_value = "data/keys/consensus_signing.key")]
         output: PathBuf,
     },
     /// 개인 seed 파일에서 validators.json에 넣을 공개키를 출력합니다.
     Public {
         /// 읽을 개인키 파일
-        #[arg(long, default_value = "config/validator.key")]
+        #[arg(long, default_value = "data/keys/consensus_signing.key")]
         key: PathBuf,
     },
     /// 이 검증자 키가 소유한 IEUM을 지정 지갑으로 안전하게 서명 전송합니다.
@@ -195,7 +195,7 @@ enum ValidatorKeyCommand {
         amount: String,
         #[arg(long, default_value = "0.000001")]
         fee: String,
-        #[arg(long, default_value = "config/validator.key")]
+        #[arg(long, default_value = "data/keys/consensus_signing.key")]
         key: PathBuf,
         #[arg(long, default_value_t = 8989)]
         rpc_port: u16,
@@ -247,7 +247,7 @@ struct NodeArgs {
     validator_index: u8,
 
     /// 운영 검증자 Ed25519 seed 32바이트 hex 파일
-    #[arg(long, default_value = "config/validator.key")]
+    #[arg(long, default_value = "data/keys/consensus_signing.key")]
     validator_key: PathBuf,
 
     /// 검증자 공개키와 투표권 설정
@@ -322,7 +322,7 @@ fn default_node_args() -> NodeArgs {
         rpc_data_dir: PathBuf::from("data/ledger"),
         node_key: PathBuf::from("data/node.key"),
         validator_index: 1,
-        validator_key: PathBuf::from("config/validator.key"),
+        validator_key: PathBuf::from("data/keys/consensus_signing.key"),
         validators_config: PathBuf::from("config/validators.json"),
         events_config: PathBuf::from("config/events.json"),
         update_manifest_url: None,
@@ -344,7 +344,7 @@ fn automatic_or_selected_mode(
 ) -> Result<(&'static str, NodeArgs, Vec<Multiaddr>, bool), String> {
     let selected = if requested == RunMode::Auto {
         if approved_local_validator(
-            Path::new("config/validator.key"),
+            Path::new("data/keys/consensus_signing.key"),
             Path::new("config/validators.json"),
         ) {
             log_info!(
@@ -365,7 +365,7 @@ fn automatic_or_selected_mode(
     let is_client = selected != RunMode::Validator;
     let label = match selected {
         RunMode::Validator => {
-            node.node_key = PathBuf::from("data/server.node.key");
+            node.node_key = PathBuf::from("data/keys/p2p_identity.key");
             "검증자"
         }
         RunMode::Public => {
@@ -417,6 +417,7 @@ fn parse_sync_quorum_peers(value: &str) -> Result<usize, String> {
 
 #[tokio::main]
 async fn main() -> Result<(), String> {
+    migrate_legacy_key_files()?;
     let cli = Args::parse();
     if cli.command.is_some() && cli.mode != RunMode::Auto {
         return Err(
@@ -450,7 +451,7 @@ async fn main() -> Result<(), String> {
         }
         Some(Command::Server(mut args)) => {
             if args.node_key == Path::new("data/node.key") {
-                args.node_key = PathBuf::from("data/server.node.key");
+                args.node_key = PathBuf::from("data/keys/p2p_identity.key");
             }
             let mut peers = std::mem::take(&mut args.peer);
             if peers.is_empty() && !args.no_default_bootstrap {
@@ -602,7 +603,8 @@ async fn main() -> Result<(), String> {
     if let Some(registration) = &local_registration {
         registrations.insert(registration.validator_id.clone(), registration.clone());
     }
-    let reward_wallet = load_or_create_reward_wallet(Path::new("data/reward.key"))?;
+    let reward_wallet =
+        load_or_create_reward_wallet(Path::new("data/keys/node_reward_signing.key"))?;
     let reward_registration_bytes =
         NodeRewardRegistration::bytes_to_sign(&reward_wallet.address(), &peer_id.to_string());
     let local_reward_registration = NodeRewardRegistration {
@@ -1173,8 +1175,8 @@ fn run_validator_key_command(command: ValidatorKeyCommand) -> Result<(), String>
 }
 
 fn run_node_command(command: NodeCommand) -> Result<(), String> {
-    let validator_key = Path::new("config/validator.key");
-    let node_key = Path::new("data/server.node.key");
+    let validator_key = Path::new("data/keys/consensus_signing.key");
+    let node_key = Path::new("data/keys/p2p_identity.key");
     let ledger_dir = Path::new("data/ledger");
     match command {
         NodeCommand::Init { new: true } => {
@@ -1230,7 +1232,7 @@ fn run_node_command(command: NodeCommand) -> Result<(), String> {
         NodeCommand::Clean { yes: true } => {
             let backup = installation::clean_ledger_preserving_identity(ledger_dir)?;
             println!("[원장 안전 백업] {}", backup.display());
-            println!("validator.key와 server.node.key는 보존했습니다.");
+            println!("합의 서명 키와 P2P 식별 키는 보존했습니다.");
             println!("다음 실행 시 네트워크에서 원장을 자동으로 다시 동기화합니다.");
             Ok(())
         }
@@ -1317,6 +1319,50 @@ async fn finalize_if_ready(
 
 fn testnet_validator_seed(index: u8) -> [u8; 32] {
     [index; 32]
+}
+
+/// 기존 설치의 키 내용을 바꾸지 않고 역할이 드러나는 새 경로로 한 번만 이전합니다.
+/// 키를 재생성하면 PeerId나 검증자 신원이 달라지므로 반드시 파일 자체를 이동합니다.
+fn migrate_legacy_key_files() -> Result<(), String> {
+    for (legacy, current, label) in [
+        (
+            Path::new("data/server.node.key"),
+            Path::new("data/keys/p2p_identity.key"),
+            "P2P 식별 키",
+        ),
+        (
+            Path::new("config/validator.key"),
+            Path::new("data/keys/consensus_signing.key"),
+            "합의 서명 키",
+        ),
+        (
+            Path::new("data/reward.key"),
+            Path::new("data/keys/node_reward_signing.key"),
+            "노드 보상 서명 키",
+        ),
+    ] {
+        if current.exists() || !legacy.exists() {
+            continue;
+        }
+        if let Some(parent) = current.parent() {
+            fs::create_dir_all(parent)
+                .map_err(|error| format!("{label} 디렉터리 생성 실패: {error}"))?;
+        }
+        fs::rename(legacy, current).map_err(|error| {
+            format!(
+                "{label} 자동 이전 실패({} -> {}): {error}",
+                legacy.display(),
+                current.display()
+            )
+        })?;
+        set_private_file_permissions(current)?;
+        log_info!(
+            "[키 경로 자동 이전] {label}: {} -> {}",
+            legacy.display(),
+            current.display()
+        );
+    }
+    Ok(())
 }
 
 fn load_or_create_reward_wallet(path: &Path) -> Result<Wallet, String> {

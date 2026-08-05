@@ -39,8 +39,8 @@ start_node() {
     --port "$p2p_port"
     --rpc-port "$rpc_port"
     --rpc-data-dir "$test_root/node-$index/ledger"
-    --node-key "$test_root/node-$index/server.node.key"
-    --validator-key "$test_root/node-$index/validator.key"
+    --node-key "$test_root/node-$index/keys/p2p_identity.key"
+    --validator-key "$test_root/node-$index/keys/consensus_signing.key"
     --validators-config "$test_root/node-$index/validators.json"
     --no-default-bootstrap
     --propose-timeout-ms 1500
@@ -158,18 +158,59 @@ print(result)
 ' <<<"$faucet_response"
 )"
 
-rpc 9202 eth_sendTransaction \
+recipient="0x1111111111111111111111111111111111111111"
+transfer_value="0x16345785d8a0000" # 0.1 IEUM
+
+for index in 1 2 3 4; do
+  port="$((9200 + index))"
+  balance_response="$(rpc "$port" eth_getBalance "[\"$faucet\",\"latest\"]")"
+  python3 - "$index" "$faucet" "$balance_response" <<'PY'
+import json
+import sys
+
+index, faucet, raw = sys.argv[1:]
+response = json.loads(raw)
+if "error" in response:
+    raise SystemExit(f"노드 {index} faucet 잔액 조회 실패: {response['error']}")
+balance = int(response.get("result", "0x0"), 16)
+required = 10**20  # 100 IEUM
+if balance < required:
+    raise SystemExit(
+        f"노드 {index} faucet 잔액 부족: address={faucet}, "
+        f"balance={balance}, required={required}"
+    )
+print(f"노드 {index} faucet 확인: {faucet}, balance={balance} wei")
+PY
+done
+
+send_response="$(rpc 9202 eth_sendTransaction \
   "[{
     \"from\":\"$faucet\",
-    \"to\":\"0x1111111111111111111111111111111111111111\",
-    \"value\":\"0x1\",
-    \"gas\":\"0x1\",
+    \"to\":\"$recipient\",
+    \"value\":\"$transfer_value\",
+    \"gas\":\"0x5208\",
     \"gasPrice\":\"0x1\"
-  }]" >/dev/null
+  }]")"
+
+transaction_hash="$(python3 - "$send_response" <<'PY'
+import json
+import sys
+
+response = json.loads(sys.argv[1])
+if "error" in response:
+    raise SystemExit(f"0.1 IEUM 송금 제출 실패: {response['error']}")
+result = response.get("result")
+if not isinstance(result, str) or not result.startswith("0x"):
+    raise SystemExit(f"송금 해시가 없는 응답: {response}")
+print(result)
+PY
+)"
+echo "0.1 IEUM 송금 제출 완료: $transaction_hash"
 
 for _ in $(seq 1 60); do
   heights=()
   roots=()
+  recipient_balances=()
   status_read_failed=false
 
   for index in 1 2 3 4; do
@@ -207,15 +248,37 @@ print(result["stateRoot"])
 
     heights+=("$height")
     roots+=("$state_root")
+
+    if ! balance_response="$(rpc "$port" eth_getBalance "[\"$recipient\",\"latest\"]" 2>/dev/null)"; then
+      status_read_failed=true
+      break
+    fi
+    if ! recipient_balance="$(python3 - "$balance_response" <<'PY'
+import json
+import sys
+response = json.loads(sys.argv[1])
+if "error" in response:
+    raise SystemExit(1)
+print(int(response.get("result", "0x0"), 16))
+PY
+)"; then
+      status_read_failed=true
+      break
+    fi
+    recipient_balances+=("$recipient_balance")
   done
 
   if [[ "$status_read_failed" == false ]] &&
      [[ "${#heights[@]}" -eq 4 ]] &&
-     [[ "${heights[*]}" == "1 1 1 1" ]] &&
+     [[ "${heights[0]}" -ge 1 ]] &&
+     [[ "${heights[0]}" == "${heights[1]}" ]] &&
+     [[ "${heights[1]}" == "${heights[2]}" ]] &&
+     [[ "${heights[2]}" == "${heights[3]}" ]] &&
      [[ "${roots[0]}" == "${roots[1]}" ]] &&
      [[ "${roots[1]}" == "${roots[2]}" ]] &&
-     [[ "${roots[2]}" == "${roots[3]}" ]]; then
-    echo "4-process BFT passed: heights=${heights[*]}, stateRoot=${roots[0]}"
+     [[ "${roots[2]}" == "${roots[3]}" ]] &&
+     [[ "${recipient_balances[*]}" == "100000000000000000 100000000000000000 100000000000000000 100000000000000000" ]]; then
+    echo "4-process BFT passed: heights=${heights[*]}, stateRoot=${roots[0]}, recipientBalance=${recipient_balances[0]}"
     exit 0
   fi
 
